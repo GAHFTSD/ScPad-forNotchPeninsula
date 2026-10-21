@@ -1,0 +1,77 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<!--
+	  ScPad —— ScPad · NotchPeninsula 插件
+
+	  构建方式（有 .NET SDK 的机器）：
+	      dotnet build ScPad.csproj -c Release
+
+	  这台机器上如果没装 SDK，可以用 build\build-offline.ps1（走系统自带的 C# 编译器，
+	  不需要 SDK / 联网 / NuGet）。
+
+	  ⚠️ 这份源码刻意写成「C# 5 也能编过」的语法（不用 ?. / 字符串插值 / using var 等），
+	     这样离线编译脚本才能用 %windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe 编。
+	     用 SDK 编译时同样没问题（语言版本随意）。
+	-->
+
+	<PropertyGroup>
+		<!-- 必须与主程序完全一致，否则宿主加载不了 -->
+		<TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+		<OutputType>Library</OutputType>
+		<AssemblyName>ScPad</AssemblyName>
+		<RootNamespace>ScPad</RootNamespace>
+		<Version>1.0.0-preview</Version>
+		<Authors>GAHFTSD</Authors>
+		<Company>GAHFTSD</Company>
+		<Product>ScPad</Product>
+		<Description>ScPad —— 把截图的收集、显示、复制与拖动粘贴接进 NotchPeninsula 灵动岛</Description>
+
+		<!-- 剪贴板 / DataObject 需要 WinForms（宿主本身也启用了 WinForms） -->
+		<UseWindowsForms>true</UseWindowsForms>
+
+		<!-- 源码是 C# 5 风格，关掉可空注解与隐式 using，避免噪音 -->
+		<Nullable>disable</Nullable>
+		<ImplicitUsings>disable</ImplicitUsings>
+		<LangVersion>latest</LangVersion>
+
+		<!-- 手写了 AssemblyInfo.cs；也避免把 build\ 下的替身/自检台当成源码 -->
+		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+		<EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+		<GenerateDocumentationFile>false</GenerateDocumentationFile>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- 只编插件根目录下的源码：build\ 里是离线编译替身与自检台 -->
+		<Compile Include="*.cs" />
+	</ItemGroup>
+
+	<PropertyGroup>
+		<!-- 宿主工程位置。默认假设 NotchPeninsula 源码解压在本仓库的**同级**目录；
+		     放别处时用命令行覆盖，例如：
+		       dotnet build ScPad.csproj -c Release -p:NotchPeninsulaProject="D:\src\NotchPeninsula-main\NotchPeninsula.csproj"
+		     也可以指向已编译好的 NotchPeninsula.dll 所在工程（见 README「生成 dll」一节）。 -->
+		<NotchPeninsulaProject Condition="'$(NotchPeninsulaProject)' == ''">..\NotchPeninsula-main\NotchPeninsula.csproj</NotchPeninsulaProject>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- 插件接口都在主程序里；Private=false：不要把宿主那一堆产物拷进插件输出目录 -->
+		<ProjectReference Include="$(NotchPeninsulaProject)">
+			<Private>false</Private>
+		</ProjectReference>
+	</ItemGroup>
+
+	<!-- 编译完顺手把 dll + plugin.json 摆到可直接安装的文件夹里 -->
+	<Target Name="StageInstallableFolder" AfterTargets="Build">
+		<PropertyGroup>
+			<StageDir>$(MSBuildThisFileDirectory)..\ScPad-Plugin\</StageDir>
+		</PropertyGroup>
+		<MakeDir Directories="$(StageDir)" />
+		<Copy SourceFiles="$(TargetPath)" DestinationFolder="$(StageDir)" SkipUnchangedFiles="true" />
+		<WriteLinesToFile File="$(StageDir)plugin.json"
+		                  Lines="{&quot;dll&quot;: &quot;ScPad.dll&quot;}"
+		                  Overwrite="true"
+		                  Encoding="UTF-8" />
+		<Message Text="插件已就绪：$(StageDir)" Importance="high" />
+	</Target>
+
+</Project>

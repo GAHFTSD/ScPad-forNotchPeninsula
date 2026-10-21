@@ -1,0 +1,75 @@
+﻿ScPad · 参考与第三方署名
+==========================================================================
+
+ScPad（NotchPeninsula 插件）是**独立实现**：未包含、也未再分发下列项目的
+源代码、图标或图片资源，也不读取、不写入它们的数据目录。它在交互语义与若干
+产品取舍上参考了下列项目，在此保留署名与许可原文，并致谢。
+
+--------------------------------------------------------------------------
+参考项目
+--------------------------------------------------------------------------
+1) Snapline · Windows 版（Tendedero 的非官方 Windows 移植）
+   作者：jiuyang5354
+   项目：https://github.com/jiuyang5354/snapline-windows
+   版权：Copyright (c) 2026 jiuyang5354 (Windows implementation)
+   参考版本：v1.3.0（预发布）
+   该版本来源说明标注的上游提交：3c866d94d25ee9d1e008aecd9a78a4e9b2bf06a4
+
+2) Tendedero（Snapline 的上游项目）
+   作者：Alejandro Buján
+   项目：https://github.com/alejandrobujan/tendedero
+   版权：Copyright (c) 2026 Alejandro Buján
+   名称与图标：不在 MIT 授权范围内；原作者要求修改版 / 再分发版使用不同的
+               名称与图标，且不得暗示其为 Tendedero 或获原作者背书。
+
+两个项目均以 MIT 许可发布（正文见文末）。
+
+--------------------------------------------------------------------------
+ScPad 参考了什么
+--------------------------------------------------------------------------
+以下均为交互与实现思路（不含代码复制、不含美术资源）：
+
+  * 「截图并排陈列在一条横线上、单击复制、按住拖出粘贴」的呈现与交互语义；
+  * 剪贴板图片采集，以及 CF_DIB 的 alpha 通道全为 0 时的修复思路；
+  * 按像素内容判重、最多保留 12 张、移出时移入回收目录的取舍；
+  * 通过系统「屏幕截图」已知文件夹定位保存 / 监听目录；
+  * 快捷键组合的校验规则（须含修饰键；F12 等系统保留键除外）；
+  * 「收集剪贴板图片」「暂停收集」这组开关的产品划分。
+
+--------------------------------------------------------------------------
+ScPad 做了什么不同的
+--------------------------------------------------------------------------
+  * 完全独立实现：C# 重写，面向 NotchPeninsula 的插件 API（.NET 10 + SkiaSharp，
+    不使用 WPF），与上述项目无可共用代码。
+  * 独立的名称、独立的插件标识（com.gahftsd.scpad）与独立的界面元素
+    （全部由 SkiaSharp 代码绘制，无图片资源）。
+  * 不耦合：不读取、不写入 %LOCALAPPDATA%\Snapline，也不复用其设置、剪贴板
+    标记或任何文件名约定。
+  * 需要迁移旧截图时，可在「设置 → 保存位置」把目录指到 Snapline 的收件夹
+    （%LOCALAPPDATA%\Snapline\Inbox），ScPad 会把它当作普通图片目录监听。
+
+ScPad 自身的许可见同目录 LICENSE（MIT，作者 GAHFTSD）。
+
+--------------------------------------------------------------------------
+MIT License（上述两个项目共同的许可正文，保留完整原文）
+--------------------------------------------------------------------------
+Copyright (c) 2026 Alejandro Buján
+Copyright (c) 2026 jiuyang5354 (Windows implementation)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
