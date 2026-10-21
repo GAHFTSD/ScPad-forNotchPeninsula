@@ -357,19 +357,5 @@ ScPad 以 **MIT** 许可发布，全文见 [`LICENSE`](LICENSE)。
    图标或插件标识，也不暗示与它们同源或获其背书。
 3. **不耦合数据**：不读取、不写入 `%LOCALAPPDATA%\Snapline`；不复用其设置、剪贴板标记与文件名约定。
 
-### 发布清单（v1.0.0-preview）
 
-- [x] 插件名 / Id / 入口文件名都是中性的（`ScPad` / `com.gahftsd.scpad` / `ScPad.dll`）；
-- [x] `LICENSE`、`THIRD-PARTY-NOTICES.txt` 填好作者（GAHFTSD）并随包分发；
-- [x] 版本定为 **1.0.0-preview**（程序集版本只能是数字，信息版本走
-      `AssemblyInformationalVersion("1.0.0-preview")`）；
-- [x] 49 项自检全过，并与市场里的插件做过宿主接口签名对账；
-- [ ] 在 GitHub 建公开仓库并推送（`.gitignore` 已排除编译产物与内部草稿）；
-- [ ] 建 Release：tag `v1.0.0-preview`，**勾选 Set as a pre-release**，附上
-      `ScPad-v1.0.0-preview.zip`；
-- [ ] 邮件告知 jiuyang5354（草稿见 `docs\email-to-upstream.md`，仅本地）；
-- [ ] 提交到插件市场（名称 / slug / 简介见 `docs\market-listing.md`，仅本地）；
-- [ ] 发布后在真实宿主里完整跑一遍（市场装一次 + 四项功能各验一遍）。
-
-> 逐项要填的字段、要勾的复选框、要替换的占位符，都整理在
-> `docs\github-publishing-checklist.md`（本地文件，不进公开仓库）。
+部分内容通过AI实现
