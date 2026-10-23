@@ -1,0 +1,23 @@
+# ---- 编译产物 ----
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+.vs/
+
+# ---- 自检 / 预览 临时产物 ----
+build/preview/
+build/**/_data/
+build/**/_shots/
+build/**/_shots2/
+*.tmp
+
+# ---- 内部草稿：只在本地用，不提交到公开仓库（docs 里只提交 README 用的 *.png）----
+docs-内部/
+
+# ---- 本地打包 ----
+release/
+*.zip
+*.nupkg
