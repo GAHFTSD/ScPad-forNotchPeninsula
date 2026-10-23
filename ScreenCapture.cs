@@ -25,8 +25,14 @@ namespace ScPad
 
         private const uint Flags = SwpNoSize | SwpNoMove | SwpNoZOrder | SwpNoActivate;
 
-        /// <summary>抓所有显示器组成的整块桌面，返回 PNG 字节。失败时 error 里有原因。</summary>
-        internal static byte[] CaptureAllScreens(out string error)
+        /// <summary>
+        /// 抓所有显示器组成的整块桌面，返回 PNG 字节。失败时 error 里有原因。
+        ///
+        /// hideIsland = 抓之前把灵动岛藏起来（设置里可关）。
+        /// setDim 是"让插件自己的组件先淡出/再淡入"的钩子 —— 宿主只提供瞬间的
+        /// SWP_HIDEWINDOW，整岛没法渐隐，所以我们至少让自己那块先淡掉，看起来不那么"啪一下没"。
+        /// </summary>
+        internal static byte[] CaptureAllScreens(bool hideIsland, Action<float> setDim, out string error)
         {
             error = null;
 
@@ -47,10 +53,14 @@ namespace ScPad
                     try { island = NotchWindow.InstanceHandle; }
                     catch (Exception ex) { Log.Warn("[ScPad] 取不到岛体句柄（照常抓屏）：" + ex.Message); }
 
-                    if (island != IntPtr.Zero && IsWindowVisible(island))
+                    if (hideIsland && island != IntPtr.Zero && IsWindowVisible(island))
                     {
+                        // 先让我们自己的组件淡出（~80ms，渲染线程每帧读这个值）
+                        if (setDim != null) setDim(1f);
+                        Thread.Sleep(80);
+
                         hidden = SetWindowPos(island, IntPtr.Zero, 0, 0, 0, 0, Flags | SwpHideWindow);
-                        if (hidden) Thread.Sleep(140);
+                        if (hidden) Thread.Sleep(90);
                     }
 
                     using (var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb))
@@ -65,6 +75,8 @@ namespace ScPad
                 }
                 finally
                 {
+                    if (setDim != null) setDim(0f);   // 让组件淡回来
+
                     if (hidden)
                     {
                         if (!SetWindowPos(island, IntPtr.Zero, 0, 0, 0, 0, Flags | SwpShowWindow))

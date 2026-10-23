@@ -86,7 +86,8 @@ try {
 
     Write-Host '编译插件…' -ForegroundColor Cyan
     $plugin = Join-Path $work 'ScPad.dll'
-    $sources = Get-ChildItem $projectDir -Filter '*.cs' | Where-Object { $_.DirectoryName -eq $projectDir } |
+    $sources = Get-ChildItem $projectDir -Filter '*.cs' |
+    Where-Object { $_.DirectoryName -eq $projectDir } |
         ForEach-Object { $_.FullName }
     Invoke-Csc $plugin $sources @('/r:' + $stub) 'library'
 

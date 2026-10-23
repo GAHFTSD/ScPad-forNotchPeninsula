@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Threading;
 using NotchPeninsula.Plugins;
 using SkiaSharp;
@@ -6,89 +7,80 @@ using SkiaSharp;
 namespace ScPad
 {
     /// <summary>
-    /// 截图夹面板（右键组件展开的详情页）—— Snapline 那条「夹在轨道上的截图」，
-    /// 外加一页自己的设置（保存位置 / 两个自定义快捷键）。
+    /// 截图夹面板（右键收缩放态组件展开的详情页）。
     ///
-    /// 交互（和 Snapline 原版对齐）：
-    ///   * 单击卡片 = 复制这张图到剪贴板（随后 Ctrl+V 就能粘）；
-    ///   * 按住卡片拖出 = 拖到别的应用里直接粘贴（走宿主 IPluginHost.StartFileDrag）；
-    ///   * 卡片右上角的 × = 移出（自己收的进 Recycle 子目录，外部原文件不动）；
-    ///   * 把图片拖进面板 = 存入截图夹；
-    ///   * 右键面板 = 收起（宿主默认手势，另外也留了 × 关闭按钮）。
+    /// 形态：
+    ///   * **固定预留 N 个格子**（默认 4，可在设置里改 1~8），空着也占位；
+    ///   * 截图**从右往左**依次填入：最新的在最右，更早的往左排；
+    ///   * 只有超过预留格数时才解锁横向滚动（滚轮，带惯性）；
+    ///   * 面板里没有标题/底部提示/按钮栏 —— 只有这一条卡片带；提示（比如"已存过"）就地淡入淡出。
     ///
-    /// 设置页：宿主没有给插件做设置面板的能力（RegisterSettingsPage 注册了也不会显示），
-    /// 所以这里自己画一份 —— 选目录、录快捷键、切动作，全部走 PluginSettings 存进注册表。
+    /// 动效（都是弹簧 + 阻尼的真实物理，不是缓动曲线）：
+    ///   * 新图进来时，其余卡片按距离依次被震一下；
+    ///   * 左右滚动时，卡片按滑动方向被"甩"一下再荡回来；
+    ///   * 拖动排序、从剪贴板上传也会引发抖动。
     ///
-    /// 两页共用同一套尺寸（Measure* 在展开时只算一次），这样切页不会让岛体跳动。
-    /// AutoCollapseDelay 返回「永不自动收起」：拖出去粘贴时鼠标必然离开岛体。
+    /// 交互：单击卡片 = 复制；按住拖动 = 面板内**排序**，拖出面板边界 = **拖出一张 PNG**；
+    /// 卡片右上角 × = 移出；点空槽 = 从剪贴板上传一张；岛内右键 = 关闭面板。
     /// </summary>
     internal sealed class ShotClipPanel : IDetailPage
     {
-        private const float Pad = 14f;
+        private const float Pad = 12f;
         private const float CardW = 148f;
         private const float CardH = 176f;
-        private const float GapX = 12f;
-        private const float RowPitch = 200f;
-        private const float CardTopGap = 20f;
-        private const float HeaderH = 44f;
-        private const float FooterH = 28f;
+        private const float Gap = 10f;
 
-        private const int TabClip = 0;
-        private const int TabSettings = 1;
+        private const float DragThreshold = 5f;
 
-        private const int BtnCopy = 0;
-        private const int BtnPause = 1;
-        private const int BtnFolder = 2;
-        private const int BtnPeek = 3;
-        private const int BtnClose = 4;
-        private const int BtnRemove = 100;
-        private const int BtnTab0 = 200;
-        private const int BtnTab1 = 201;
-        private const int BtnChooseFolder = 210;
-        private const int BtnOpenFolder = 211;
-        private const int BtnClearList = 212;
-        private const int BtnDefaultFolder = 213;
-        private const int BtnRecordA = 220;
-        private const int BtnRecordB = 221;
-        private const int BtnClearA = 222;
-        private const int BtnClearB = 223;
-        private const int BtnActionA = 224;
-        private const int BtnActionB = 225;
-
-        private const float DragThreshold = 4f;
+        /// <summary>拖动时越过面板边界这么多像素，就从"排序"切成"拖出粘贴"。</summary>
+        private const float DragOutMargin = 26f;
 
         private static readonly SKColor Accent = new SKColor(88, 214, 141);
-        private static readonly SKColor Warning = new SKColor(232, 126, 100);
 
         private readonly ScPadPlugin _plugin;
         private readonly ShotStore _store;
         private readonly IPluginHost _host;
+        private readonly ScrollModel _scroll = new ScrollModel();
 
-        // 布局（MeasureWidth / MeasureHeight 时算，Draw 与命中检测共用同一套数）
-        private int _cols = 3;
-        private int _rows = 1;
-        private int _capacity = 3;
-        private float _layoutW = 496f;
-        private float _layoutH = 272f;
+        /// <summary>每张卡片自己的晃动（按图片路径记，排序后不会串味）。</summary>
+        private readonly Dictionary<string, SpringMotion> _springs =
+            new Dictionary<string, SpringMotion>(StringComparer.OrdinalIgnoreCase);
 
-        // 最近一帧的实际矩形（弹簧动画期间是插值尺寸，用来把指针坐标换回排版坐标）
-        private float _rectW = 496f;
-        private float _rectH = 272f;
+        private float _layoutW = 646f;
+        private float _layoutH = 200f;
 
-        private int _tab = TabClip;
+        private float _rectW = 646f;
+        private float _rectH = 200f;
 
-        // 指针状态
+        private int _slots = 4;
+        private int _layoutCount = 4;
+        private int _count;
+        private long _lastFrameTicks;
+        private long _scrollImpulseTicks;
+        private int _lastCount = -1;
+
         private bool _pressed;
-        private int _pressCard = -1;
-        private int _pressButton = -1;
+        private int _pressSlot = -1;
+        private int _pressRemove = -1;
         private float _pressX;
         private float _pressY;
         private float _mouseX = -1000f;
         private float _mouseY = -1000f;
-        private bool _dragging;
 
-        // 拖入状态
+        // 拖动排序
+        private bool _reordering;
+        private int _reorderFromSlot = -1;
+        private int _reorderToSlot = -1;
+        private float _dragX;
+
         private int _dragHover;
+
+        /// <summary>抓屏时让位：0 = 正常，1 = 完全透明。</summary>
+        private float _dim;
+
+        // 就地提示（例如"这张已经存过了"）
+        private string _hintText = "";
+        private long _hintUntilTicks;
 
         internal ShotClipPanel(ScPadPlugin plugin, ShotStore store, IPluginHost host)
         {
@@ -102,19 +94,16 @@ namespace ScPad
 
         private void RecomputeLayout()
         {
-            int count = _store.Snapshot.Length;
+            int slots = Math.Max(1, Math.Min(PluginSettings.MaxSlots, _store.Settings.PanelSlots));
+            _slots = slots;
 
-            int cols = count > 6 ? 6 : 3;
-            int rows = (count == 0 || count <= cols) ? 1 : 2;
+            int total = Math.Min(_store.Snapshot.Length, Math.Max(1, _store.Settings.MaxItems));
+            _count = total;
+            _layoutCount = total > slots ? total : slots;
 
-            _cols = cols;
-            _rows = rows;
-            _capacity = cols * rows;
-            _layoutW = Pad * 2f + cols * CardW + (cols - 1) * GapX;
-            _layoutH = HeaderH + rows * RowPitch + FooterH;
-
-            // 设置页也要放得下：从上往下摆大约需要 196px
-            if (_layoutH < HeaderH + FooterH + 196f) _layoutH = HeaderH + FooterH + 196f;
+            // 宽度永远按"预留格数"算：空着也占位
+            _layoutW = Pad * 2f + slots * CardW + (slots - 1) * Gap;
+            _layoutH = Pad * 2f + CardH;
 
             _rectW = _layoutW;
             _rectH = _layoutH;
@@ -132,20 +121,43 @@ namespace ScPad
             return _layoutH;
         }
 
-        public TimeSpan AutoCollapseDelay
-        {
-            get { return Timeout.InfiniteTimeSpan; }
-        }
+        public TimeSpan AutoCollapseDelay { get { return Timeout.InfiniteTimeSpan; } }
 
         public bool AcceptsRightClick { get { return false; } }
 
         public bool AcceptsDoubleClick { get { return false; } }
+
+        /// <summary>清掉就地提示（换页/预览时用）。</summary>
+        internal void ClearHint()
+        {
+            _hintText = "";
+            _hintUntilTicks = 0;
+        }
+
+        /// <summary>抓屏动画：0 正常 / 1 完全让位。</summary>
+        internal void SetDim(float amount)
+        {
+            if (amount < 0f) amount = 0f;
+            if (amount > 1f) amount = 1f;
+            _dim = amount;
+        }
+
+        /// <summary>面板就地提示（不弹通知）。</summary>
+        internal void ShowHint(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            _hintText = text;
+            _hintUntilTicks = DateTime.UtcNow.Ticks + TimeSpan.TicksPerMillisecond * 2200L;
+        }
 
         // ---- 绘制 ----
 
         public void Draw(SKCanvas canvas, SKRect rect, WidgetFrame frame)
         {
             if (canvas == null || frame.Alpha == 0) return;
+            if (_dim >= 0.99f) return;
+
+            WheelRouter.MarkPanelDrawn();
 
             _rectW = rect.Width;
             _rectH = rect.Height;
@@ -160,6 +172,19 @@ namespace ScPad
             canvas.Save();
             canvas.Translate(left, top);
             canvas.Scale(scale);
+
+            bool dimmed = _dim > 0.01f;
+            if (dimmed)
+            {
+                // 抓屏那一瞬整体淡出（只用在这一瞬间，平时不额外开销）
+                byte layerAlpha = (byte)Math.Round(255.0 * (1.0 - _dim));
+                using (var paint = new SKPaint())
+                {
+                    paint.Color = new SKColor(255, 255, 255, layerAlpha);
+                    canvas.SaveLayer(paint);
+                }
+            }
+
             try
             {
                 DrawContent(canvas, frame);
@@ -170,6 +195,7 @@ namespace ScPad
             }
             finally
             {
+                if (dimmed) canvas.Restore();
                 canvas.Restore();
             }
         }
@@ -177,275 +203,166 @@ namespace ScPad
         private void DrawContent(SKCanvas canvas, WidgetFrame frame)
         {
             Shot[] shots = _store.Snapshot;
-            int slots = Math.Min(shots.Length, _capacity <= 0 ? 3 : _capacity);
+            int total = Math.Min(shots.Length, Math.Max(1, _store.Settings.MaxItems));
 
-            DrawHeader(canvas, frame, shots.Length);
+            long now = DateTime.UtcNow.Ticks;
+            float dt = _lastFrameTicks == 0L ? 0f : (float)((now - _lastFrameTicks) / (double)TimeSpan.TicksPerSecond);
+            _lastFrameTicks = now;
 
-            if (_tab == TabSettings)
+            if (_lastCount >= 0 && total > _lastCount) OnNewShots(total - _lastCount, total);
+            _lastCount = total;
+            _count = total;
+
+            // 只有超过预留格数才解锁滚动；空槽也占位，所以内容宽度至少是预留格数
+            int layoutCount = total > _slots ? total : _slots;
+            _layoutCount = layoutCount;
+            float contentW = layoutCount * (CardW + Gap) - Gap;
+            float viewportW = _slots * CardW + (_slots - 1) * Gap;
+            _scroll.SetMax(Math.Max(0f, contentW - viewportW));
+
+            // 滚轮默认不接管（用户要求未经允许不要用滚轮）：
+            // 翻页改成点两端的箭头（见 OnMouseDown），这里只做惯性推进。
+            // 约定：Offset = 0 是「停在最新那头（最右）」，增大 = 往左看更早的。
+            _scroll.Update(dt);
+
+            // 滑动 → 卡片按方向被甩一下（弹簧冲量，方向跟滚动一致）
+            if (_scroll.Velocity != 0f && now - _scrollImpulseTicks > TimeSpan.TicksPerMillisecond * 90L)
             {
-                DrawSettings(canvas, frame);
+                _scrollImpulseTicks = now;
+                float impulse = _scroll.Velocity * 0.02f;
+                if (impulse > 70f) impulse = 70f;
+                if (impulse < -70f) impulse = -70f;
+                for (int i = 0; i < total; i++) SpringOf(shots[shots.Length - 1 - i]).Impulse(impulse);
             }
-            else
-            {
-                DrawRail(canvas, frame);
 
-                if (slots == 0)
+            for (int i = 0; i < total; i++) SpringOf(shots[shots.Length - 1 - i]).Step(dt);
+
+            float contentLeft = Pad + viewportW - contentW + _scroll.Offset;
+
+            canvas.Save();
+            canvas.ClipRect(new SKRect(Pad - 2f, Pad - 6f, _layoutW - Pad + 2f, _layoutH - Pad));
+            try
+            {
+                int hover = _reordering ? -1 : HitSlot(_mouseX, _mouseY);
+
+                // 从左往右画：空槽 + 卡片（最新的在最右）
+                for (int slot = _slots - 1; slot >= 0; slot--)
                 {
-                    DrawEmpty(canvas, frame);
-                }
-                else
-                {
-                    int hoverSlot = HitCard(_mouseX, _mouseY);
-                    for (int slot = 0; slot < slots; slot++)
+                    float x = SlotLeft(slot, contentLeft);
+
+                    if (slot >= total)
                     {
-                        int index = shots.Length - 1 - slot;   // 最近的一张在最左
-                        if (index < 0) break;
-
-                        SKRect body = CardRect(slot);
-                        DrawCard(canvas, body, shots[index], frame, slot == hoverSlot);
+                        DrawEmptySlot(canvas, new SKRect(x, Pad, x + CardW, Pad + CardH), frame);
+                        continue;
                     }
+
+                    if (_reordering && slot == _reorderFromSlot) continue;   // 被拖的那张最后单独画
+
+                    // 让位：拖到别处时，中间几张往旁边错一下
+                    if (_reordering && _reorderFromSlot >= 0 && _reorderToSlot >= 0)
+                    {
+                        int lo = Math.Min(_reorderFromSlot, _reorderToSlot);
+                        int hi = Math.Max(_reorderFromSlot, _reorderToSlot);
+                        if (slot > lo && slot < hi)
+                        {
+                            x += (_reorderToSlot > _reorderFromSlot ? -1f : 1f) * (CardW + Gap) * 0.35f;
+                        }
+                    }
+
+                    Shot shot = shots[shots.Length - 1 - slot];
+                    float sway = SpringOf(shot).Value;
+                    float tilt = (float)((float)shot.Tilt * 0.6 + sway * 0.05 + Wobble(shot));
+
+                    DrawCard(canvas, new SKRect(x + sway * 0.12f, Pad, x + CardW + sway * 0.12f, Pad + CardH),
+                        shot, frame, slot == hover, tilt);
                 }
 
-                DrawFooter(canvas, frame, shots.Length);
+                // 被拖动的卡片浮在最上面，跟手 + 倾斜
+                if (_reordering && _reorderFromSlot >= 0 && _reorderFromSlot < total)
+                {
+                    Shot dragging = shots[shots.Length - 1 - _reorderFromSlot];
+                    var body = new SKRect(_dragX - CardW * 0.5f, Pad - 7f, _dragX + CardW * 0.5f, Pad - 7f + CardH);
+                    DrawCard(canvas, body, dragging, frame, false, 3.5f);
+                }
+            }
+            finally
+            {
+                canvas.Restore();
             }
 
+            DrawScrollHint(canvas, frame);
+            DrawHint(canvas, frame, now);
             DrawDropOverlay(canvas, frame);
         }
 
-        // ---- 头部（两页共用：左边页签、右边按钮）----
-
-        private void DrawHeader(SKCanvas canvas, WidgetFrame frame, int count)
+        private float SlotLeft(int slot, float contentLeft)
         {
-            string tab0 = count > 0 ? "截图夹 · " + count.ToString() : "截图夹";
-            DrawTab(canvas, HeaderTabRect(0), tab0, _tab == TabClip, frame);
-            DrawTab(canvas, HeaderTabRect(1), "设置", _tab == TabSettings, frame);
-
-            if (_tab == TabClip)
-            {
-                DrawButton(canvas, HeaderButtonRect(BtnCopy), "复制最近一张", frame, true, count > 0);
-                DrawButton(canvas, HeaderButtonRect(BtnPause), _store.Paused ? "恢复收集" : "暂停收集", frame, false, true);
-            }
-
-            DrawButton(canvas, HeaderButtonRect(BtnClose), "×", frame, false, true);
+            // 槽位从右往左排：slot 0 在最右
+            return contentLeft + (_layoutCount - 1 - slot) * (CardW + Gap);
         }
 
-        private void DrawTab(SKCanvas canvas, SKRect rect, string label, bool selected, WidgetFrame frame)
+        private void DrawEmptySlot(SKCanvas canvas, SKRect body, WidgetFrame frame)
         {
             SKColor ink = frame.Theme.TextColor;
-            bool hover = Contains(rect, _mouseX, _mouseY);
+            Ui.StrokeRound(canvas, body, 9f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 28)), 1.2f);
 
-            if (selected)
-            {
-                Ui.FillRound(canvas, rect, 8f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 30)));
-                Ui.StrokeRound(canvas, rect, 8f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 55)), 1f);
-            }
-            else if (hover)
-            {
-                Ui.FillRound(canvas, rect, 8f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 16)));
-            }
-
-            byte alpha = selected ? (byte)240 : (byte)(hover ? 190 : 140);
-            Ui.Text(canvas, label, rect.MidX, Ui.Baseline(rect.MidY, Ui.BodySize), Ui.BodySize,
-                ink.WithAlpha(Ui.Alpha(frame.Alpha, alpha)), selected, rect.Width - 10f, SKTextAlign.Center);
+            // 一个淡淡的「+」：点空槽 = 从剪贴板上传一张
+            float cx = body.MidX;
+            float cy = body.MidY;
+            byte plusAlpha = Ui.Alpha(frame.Alpha, 55);
+            Ui.Line(canvas, cx - 7f, cy, cx + 7f, cy, ink.WithAlpha(plusAlpha), 1.4f);
+            Ui.Line(canvas, cx, cy - 7f, cx, cy + 7f, ink.WithAlpha(plusAlpha), 1.4f);
         }
 
-        private void DrawRail(SKCanvas canvas, WidgetFrame frame)
+        private void DrawScrollHint(SKCanvas canvas, WidgetFrame frame)
         {
+            if (!_scroll.Overflow) return;
+
             SKColor ink = frame.Theme.TextColor;
-            byte railAlpha = Ui.Alpha(frame.Alpha, 55);
+            byte alpha = Ui.Alpha(frame.Alpha, 110);
+            float midY = _layoutH * 0.5f;
 
-            for (int row = 0; row < _rows; row++)
+            if (_scroll.Offset < _scroll.Max - 1f)   // 左边还有更早的
             {
-                float y = HeaderH + row * RowPitch + 9f;
-                Ui.Line(canvas, Pad - 2f, y, _layoutW - Pad + 2f, y, ink.WithAlpha(railAlpha), 1.4f);
-
-                // 轨道两端的小圆点
-                Ui.FillCircle(canvas, Pad - 2f, y, 2f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 80)));
-                Ui.FillCircle(canvas, _layoutW - Pad + 2f, y, 2f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 80)));
+                float ax = Pad - 5f;
+                Ui.Line(canvas, ax + 2.5f, midY - 4f, ax, midY, ink.WithAlpha(alpha), 1.4f);
+                Ui.Line(canvas, ax, midY, ax + 2.5f, midY + 4f, ink.WithAlpha(alpha), 1.4f);
+            }
+            if (_scroll.Offset > 1f)                // 右边还有更新的
+            {
+                float ax = _layoutW - Pad + 5f;
+                Ui.Line(canvas, ax - 2.5f, midY - 4f, ax, midY, ink.WithAlpha(alpha), 1.4f);
+                Ui.Line(canvas, ax, midY, ax - 2.5f, midY + 4f, ink.WithAlpha(alpha), 1.4f);
             }
         }
 
-        private void DrawEmpty(SKCanvas canvas, WidgetFrame frame)
+        private void DrawHint(SKCanvas canvas, WidgetFrame frame, long now)
         {
-            SKColor ink = frame.Theme.TextColor;
-            float cx = _layoutW * 0.5f;
-            float cy = HeaderH + RowPitch * 0.5f;
+            if (_hintText.Length == 0 || now >= _hintUntilTicks) return;
 
-            Ui.Text(canvas, "还没有截图", cx, cy - 4f, 13f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 190)),
-                true, 0f, SKTextAlign.Center);
+            long remaining = _hintUntilTicks - now;
+            float fade = remaining > TimeSpan.TicksPerMillisecond * 400L
+                ? 1f
+                : (float)(remaining / (double)(TimeSpan.TicksPerMillisecond * 400L));
 
-            string hint = _store.Paused
-                ? "自动收集已暂停 · 按上面的「恢复收集」继续"
-                : "按 Win + Shift + S 截图，或把图片直接拖到这里加入";
-            Ui.Text(canvas, hint, cx, cy + 18f, Ui.SmallSize, ink.WithAlpha(Ui.Alpha(frame.Alpha, 120)),
-                false, 0f, SKTextAlign.Center);
-        }
+            byte alpha = Ui.Alpha(frame.Alpha, (byte)(205f * fade));
+            float width = Ui.Measure(_hintText, 12f, false) + 26f;
+            var pill = new SKRect(_layoutW * 0.5f - width * 0.5f, _layoutH - 33f,
+                _layoutW * 0.5f + width * 0.5f, _layoutH - 11f);
 
-        private void DrawFooter(SKCanvas canvas, WidgetFrame frame, int count)
-        {
-            SKColor ink = frame.Theme.TextColor;
-            float baseline = _layoutH - 13f;
-
-            if (_tab == TabSettings)
-            {
-                Ui.Text(canvas, "设置立即生效并记住（存在宿主的插件设置里）", Pad, baseline, Ui.SmallSize,
-                    ink.WithAlpha(Ui.Alpha(frame.Alpha, 110)), false, _layoutW - Pad * 2f, SKTextAlign.Left);
-                return;
-            }
-
-            string hint = count == 0 ? "右键关闭面板" : "单击复制 · 按住拖到其他应用即可粘贴 · 右键关闭";
-            Ui.Text(canvas, hint, Pad, baseline, Ui.SmallSize, ink.WithAlpha(Ui.Alpha(frame.Alpha, 110)),
-                false, _layoutW - Pad * 2f - 200f, SKTextAlign.Left);
-
-            DrawLink(canvas, FooterButtonRect(BtnFolder), "打开保存位置", frame);
-            DrawLink(canvas, FooterButtonRect(BtnPeek), _store.AutoPeek ? "自动展开 · 开" : "自动展开 · 关", frame);
-        }
-
-        // ---- 设置页 ----
-
-        private void DrawSettings(SKCanvas canvas, WidgetFrame frame)
-        {
-            SKColor ink = frame.Theme.TextColor;
-            float y0 = SettingsTop;
-
-            // ① 保存位置
-            Ui.Text(canvas, "保存位置", Pad, y0 + 9f, Ui.BodySize, ink.WithAlpha(Ui.Alpha(frame.Alpha, 220)),
-                true, 160f, SKTextAlign.Left);
-            DrawLink(canvas, DefaultFolderRect(), "恢复默认", frame);
-
-            SKRect pathRect = SavePathRect();
-            Ui.FillRound(canvas, pathRect, 7f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 18)));
-            Ui.StrokeRound(canvas, pathRect, 7f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 40)), 1f);
-
-            string folder = _store.SaveFolder;
-            string folderError = _store.SaveFolderError;
-            SKColor pathColor = string.IsNullOrEmpty(folderError)
-                ? ink.WithAlpha(Ui.Alpha(frame.Alpha, 225))
-                : Warning.WithAlpha(Ui.Alpha(frame.Alpha, 235));
-
-            Ui.TextTail(canvas, folder, pathRect.Left + 9f, Ui.Baseline(pathRect.MidY, Ui.BodySize),
-                Ui.BodySize, pathColor, false, pathRect.Width - 18f);
-
-            DrawButton(canvas, ChooseFolderRect(), "选择文件夹…", frame, false, true);
-            DrawButton(canvas, OpenFolderRect(), "打开", frame, false, true);
-            DrawButton(canvas, ClearListRect(), "清空列表", frame, false, true);
-
-            if (!string.IsNullOrEmpty(folderError))
-            {
-                Ui.TextTail(canvas, "目录不可用：" + folderError, Pad, y0 + 84f, Ui.SmallSize,
-                    Warning.WithAlpha(Ui.Alpha(frame.Alpha, 220)), false, _layoutW - Pad * 2f);
-            }
-
-            // ② 快捷键
-            float hotkeyY = y0 + 100f;
-            Ui.Text(canvas, "快捷键", Pad, hotkeyY + 9f, Ui.BodySize, ink.WithAlpha(Ui.Alpha(frame.Alpha, 220)),
-                true, 120f, SKTextAlign.Left);
-
-            HotkeyHost keys = _plugin.Hotkeys;
-            int recording = keys == null ? -1 : keys.RecordingSlot;
-
-            string hint;
-            if (recording >= 0)
-            {
-                string message = keys.RecordingMessage;
-                hint = string.IsNullOrEmpty(message) ? "按下组合键…" : message;
-            }
-            else
-            {
-                hint = "至少一个修饰键（或 F1~F24）· 默认 Ctrl + PrtSc";
-            }
-
-            SKColor hintColor = recording >= 0 ? Accent : ink.WithAlpha(Ui.Alpha(frame.Alpha, 110));
-            Ui.Text(canvas, hint, Pad + 62f, hotkeyY + 9f, Ui.SmallSize, hintColor, false,
-                _layoutW - Pad * 2f - 62f, SKTextAlign.Left);
-
-            DrawHotkeyRow(canvas, frame, 0, recording == 0);
-            DrawHotkeyRow(canvas, frame, 1, recording == 1);
-
-            DrawSettingsHelp(canvas, frame);
-        }
-
-        /// <summary>面板够高时补一段动作说明（矮面板就省掉，免得挤）。</summary>
-        private void DrawSettingsHelp(SKCanvas canvas, WidgetFrame frame)
-        {
-            if (!HelpVisible) return;
-
-            float top = HotkeyRowTop(1) + 42f;
-            float bottom = _layoutH - FooterH - 6f;
-            if (bottom - top < 76f) return;
-
-            SKColor ink = frame.Theme.TextColor;
-            float baseline = top + 10f;
-
-            Ui.Text(canvas, "快捷键动作", Pad, baseline, Ui.BodySize,
-                ink.WithAlpha(Ui.Alpha(frame.Alpha, 200)), true, 200f, SKTextAlign.Left);
-
-            string[] lines = new string[]
-            {
-                "截图并存入 —— 抓一张整屏（岛体先自动藏一下），存入截图夹并放进剪贴板",
-                "展开 / 收起 —— 打开或收起这个面板，和「右键组件」等价",
-                "复制最近一张 —— 把最新那张放进剪贴板，直接 Ctrl+V 就能粘"
-            };
-
-            for (int i = 0; i < lines.Length; i++)
-            {
-                float y = baseline + 22f + i * 19f;
-                if (y > bottom) break;
-
-                Ui.FillCircle(canvas, Pad + 3f, y - 3.5f, 2f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 90)));
-                Ui.Text(canvas, lines[i], Pad + 13f, y, Ui.SmallSize,
-                    ink.WithAlpha(Ui.Alpha(frame.Alpha, 125)), false, _layoutW - Pad * 2f - 13f, SKTextAlign.Left);
-            }
-        }
-
-        private void DrawHotkeyRow(SKCanvas canvas, WidgetFrame frame, int slot, bool recording)
-        {
-            SKColor ink = frame.Theme.TextColor;
-            PluginSettings settings = _store.Settings;
-
-            HotkeySpec spec = settings.Hotkey(slot);
-            int action = settings.HotkeyAction(slot);
-
-            HotkeyHost keys = _plugin.Hotkeys;
-            bool failed = spec.IsSet && keys != null && !keys.IsRegistered(slot);
-
-            SKRect combo = HotkeyComboRect(slot);
-            Ui.FillRound(canvas, combo, 7f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 18)));
-
-            if (recording) Ui.StrokeRound(canvas, combo, 7f, Accent.WithAlpha(Ui.Alpha(frame.Alpha, 220)), 1.5f);
-            else if (failed) Ui.StrokeRound(canvas, combo, 7f, Warning.WithAlpha(Ui.Alpha(frame.Alpha, 200)), 1.5f);
-            else Ui.StrokeRound(canvas, combo, 7f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 40)), 1f);
-
-            string text = recording ? "按下组合键…" : spec.Text;
-            SKColor textColor = recording
-                ? Accent.WithAlpha(Ui.Alpha(frame.Alpha, 240))
-                : (failed ? Warning.WithAlpha(Ui.Alpha(frame.Alpha, 230)) : ink.WithAlpha(Ui.Alpha(frame.Alpha, 230)));
-
-            Ui.Text(canvas, text, combo.Left + 9f, Ui.Baseline(combo.MidY, Ui.BodySize), Ui.BodySize,
-                textColor, false, combo.Width - 18f, SKTextAlign.Left);
-
-            if (failed)
-            {
-                string error = keys.RegistrationError(slot);
-                if (string.IsNullOrEmpty(error)) error = "注册失败";
-                Ui.Text(canvas, error, combo.Right - 9f, Ui.Baseline(combo.MidY, Ui.SmallSize), Ui.SmallSize,
-                    Warning.WithAlpha(Ui.Alpha(frame.Alpha, 210)), false, combo.Width * 0.62f, SKTextAlign.Right);
-            }
-
-            DrawButton(canvas, HotkeyRecordRect(slot), recording ? "取消" : "录制", frame, recording, true);
-            DrawButton(canvas, HotkeyClearRect(slot), "清除", frame, false, spec.IsSet);
-            DrawButton(canvas, HotkeyActionRect(slot), PluginSettings.ActionText(action), frame, false, true);
+            Ui.FillRound(canvas, pill, 8f, new SKColor(18, 18, 20).WithAlpha(alpha));
+            Ui.Text(canvas, _hintText, pill.MidX, Ui.Baseline(pill.MidY, 12f), 12f,
+                SKColors.White.WithAlpha(alpha), false, 0f, SKTextAlign.Center);
         }
 
         private void DrawDropOverlay(SKCanvas canvas, WidgetFrame frame)
         {
             if (_dragHover <= 0) return;
 
-            var box = new SKRect(3f, 3f, _layoutW - 3f, _layoutH - 3f);
-            Ui.FillRound(canvas, box, 13f, Accent.WithAlpha(Ui.Alpha(frame.Alpha, 26)));
-            Ui.StrokeRound(canvas, box, 13f, Accent.WithAlpha(Ui.Alpha(frame.Alpha, 150)), 1.6f);
+            var box = new SKRect(2f, 2f, _layoutW - 2f, _layoutH - 2f);
+            Ui.FillRound(canvas, box, 11f, Accent.WithAlpha(Ui.Alpha(frame.Alpha, 26)));
+            Ui.StrokeRound(canvas, box, 11f, Accent.WithAlpha(Ui.Alpha(frame.Alpha, 150)), 1.6f);
 
-            // 提示做成实心小胶囊：落在卡片上也能看清
             string text = "松手存入 " + _dragHover.ToString() + " 张图片";
             float textWidth = Ui.Measure(text, 13f, true) + 30f;
             var pill = new SKRect(_layoutW * 0.5f - textWidth * 0.5f, _layoutH * 0.5f - 17f,
@@ -455,71 +372,33 @@ namespace ScPad
                 SKColors.White.WithAlpha(Ui.Alpha(frame.Alpha, 255)), true, 0f, SKTextAlign.Center);
         }
 
-        private void DrawButton(SKCanvas canvas, SKRect rect, string label, WidgetFrame frame, bool primary, bool enabled)
-        {
-            if (rect.Width <= 0f) return;
-
-            SKColor ink = frame.Theme.TextColor;
-            bool hover = enabled && Contains(rect, _mouseX, _mouseY);
-
-            int fill = primary ? 32 : 18;
-            if (hover) fill += 14;
-            if (!enabled) fill = 8;
-
-            Ui.FillRound(canvas, rect, 7f, ink.WithAlpha(Ui.Alpha(frame.Alpha, fill)));
-            if (primary) Ui.StrokeRound(canvas, rect, 7f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 55)), 1f);
-
-            byte textAlpha = (byte)(enabled ? (hover ? 245 : 215) : 95);
-            Ui.Text(canvas, label, rect.MidX, Ui.Baseline(rect.MidY, Ui.SmallSize), Ui.SmallSize,
-                ink.WithAlpha(Ui.Alpha(frame.Alpha, textAlpha)), false, rect.Width - 8f, SKTextAlign.Center);
-        }
-
-        private void DrawLink(SKCanvas canvas, SKRect rect, string label, WidgetFrame frame)
-        {
-            if (rect.Width <= 0f) return;
-
-            SKColor ink = frame.Theme.TextColor;
-            bool hover = Contains(rect, _mouseX, _mouseY);
-            if (hover) Ui.FillRound(canvas, rect, 6f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 26)));
-
-            Ui.Text(canvas, label, rect.MidX, Ui.Baseline(rect.MidY, Ui.SmallSize), Ui.SmallSize,
-                ink.WithAlpha(Ui.Alpha(frame.Alpha, (byte)(hover ? 220 : 140))), false, rect.Width - 6f, SKTextAlign.Center);
-        }
-
-        private void DrawCard(SKCanvas canvas, SKRect body, Shot shot, WidgetFrame frame, bool hover)
+        private void DrawCard(SKCanvas canvas, SKRect body, Shot shot, WidgetFrame frame, bool hover, float tilt)
         {
             SKColor ink = frame.Theme.TextColor;
-            double tilt = shot.Tilt + Wobble(shot);
 
             canvas.Save();
-            canvas.RotateDegrees((float)tilt, body.MidX, body.Top);
+            canvas.RotateDegrees(tilt, body.MidX, body.Top);
 
-            // 夹子
-            var pin = new SKRect(body.MidX - 4.5f, body.Top - 17f, body.MidX + 4.5f, body.Top + 6f);
+            var pin = new SKRect(body.MidX - 4.5f, body.Top - 14f, body.MidX + 4.5f, body.Top + 6f);
             Ui.FillRound(canvas, pin, 3f, ink.WithAlpha(Ui.Alpha(frame.Alpha, hover ? 130 : 95)));
 
-            // 卡面（悬停时抬一点亮度，不位移，免得命中检测对不上）
             Ui.FillRound(canvas, body, 9f, ink.WithAlpha(Ui.Alpha(frame.Alpha, hover ? 30 : 18)));
             Ui.StrokeRound(canvas, body, 9f, ink.WithAlpha(Ui.Alpha(frame.Alpha, hover ? 95 : 55)), 1f);
 
-            // 图片区
             var imageArea = new SKRect(body.Left + 7f, body.Top + 7f, body.Right - 7f, body.Bottom - 33f);
             Ui.FillRound(canvas, imageArea, 5f, ink.WithAlpha(Ui.Alpha(frame.Alpha, 14)));
             if (shot.Thumb != null)
             {
-                SKRect destination = Ui.FitRect(imageArea, shot.Thumb.Width, shot.Thumb.Height);
-                Ui.Bitmap(canvas, shot.Thumb, destination, frame.Alpha);
+                Ui.Bitmap(canvas, shot.Thumb, Ui.FitRect(imageArea, shot.Thumb.Width, shot.Thumb.Height), frame.Alpha);
             }
 
-            // 名称 + 时间
             float metaBaseline = body.Bottom - 12f;
             Ui.Text(canvas, shot.FileName, body.Left + 7f, metaBaseline, Ui.SmallSize,
                 ink.WithAlpha(Ui.Alpha(frame.Alpha, 210)), false, body.Width - 52f, SKTextAlign.Left);
             Ui.Text(canvas, shot.TimeText, body.Right - 7f, metaBaseline, Ui.SmallSize,
                 ink.WithAlpha(Ui.Alpha(frame.Alpha, 120)), false, 40f, SKTextAlign.Right);
 
-            // 悬停出现「移出」
-            if (hover && !_dragging)
+            if (hover && !_reordering)
             {
                 float cx = body.Right - 13f;
                 float cy = body.Top + 13f;
@@ -530,7 +409,6 @@ namespace ScPad
                     ink.WithAlpha(Ui.Alpha(frame.Alpha, 235)), 1.5f);
             }
 
-            // 「已复制」小徽标（打勾是画出来的，不依赖字体里有没有 ✓）
             double age = CopiedAge(shot);
             if (age >= 0.0 && age < 1.3)
             {
@@ -551,200 +429,79 @@ namespace ScPad
             canvas.Restore();
         }
 
-        // ---- 布局几何 ----
+        // ---- 弹簧 ----
 
-        private SKRect HeaderTabRect(int tab)
+        private SpringMotion SpringOf(Shot shot)
         {
-            if (tab == TabSettings) return new SKRect(Pad + 84f, 8f, Pad + 84f + 54f, 34f);
-            return new SKRect(Pad, 8f, Pad + 80f, 34f);
+            string key = shot != null ? shot.Path : "";
+            SpringMotion spring;
+            if (_springs.TryGetValue(key, out spring)) return spring;
+
+            spring = new SpringMotion();
+            if (_springs.Count > 64) _springs.Clear();   // 保险：字典不无限长
+            _springs[key] = spring;
+            return spring;
         }
 
-        private SKRect HeaderButtonRect(int id)
+        /// <summary>有新图进来：其余卡片按距离依次被震一下（越近越明显、方向交替）。</summary>
+        private void OnNewShots(int arrived, int total)
         {
-            float right = _layoutW - Pad;
-            float top = 8f;
-            float height = 26f;
-
-            switch (id)
-            {
-                case BtnClose:
-                    return new SKRect(right - 26f, top, right, top + height);
-
-                case BtnPause:
-                    if (_tab != TabClip) return SKRect.Empty;
-                    return new SKRect(right - 34f - 60f, top, right - 34f, top + height);
-
-                case BtnCopy:
-                    if (_tab != TabClip) return SKRect.Empty;
-                    return new SKRect(right - 34f - 60f - 8f - 96f, top, right - 34f - 60f - 8f, top + height);
-            }
-            return SKRect.Empty;
-        }
-
-        private SKRect FooterButtonRect(int id)
-        {
-            if (_tab != TabClip) return SKRect.Empty;
-
-            float right = _layoutW - Pad;
-            float top = _layoutH - 24f;
-            float height = 20f;
-
-            switch (id)
-            {
-                case BtnFolder:
-                    return new SKRect(right - 92f, top, right, top + height);
-                case BtnPeek:
-                    return new SKRect(right - 92f - 6f - 90f, top, right - 92f - 6f, top + height);
-            }
-            return SKRect.Empty;
-        }
-
-        /// <summary>面板够高时才补「快捷键动作」说明。</summary>
-        private bool HelpVisible
-        {
-            get { return _layoutH - HeaderH - FooterH >= 272f; }
-        }
-
-        /// <summary>设置页内容整体垂直居中：矮面板贴顶，高面板不至于下面空一大片。</summary>
-        private float SettingsTop
-        {
-            get
-            {
-                float available = _layoutH - HeaderH - FooterH;
-                float contentHeight = HelpVisible ? 270f : 196f;
-                float offset = (available - contentHeight) * 0.5f;
-                if (offset < 0f) offset = 0f;
-                return HeaderH + 8f + offset;
-            }
-        }
-
-        private SKRect DefaultFolderRect()
-        {
-            float right = _layoutW - Pad;
-            return new SKRect(right - 62f, SettingsTop - 1f, right, SettingsTop + 17f);
-        }
-
-        private SKRect SavePathRect()
-        {
-            return new SKRect(Pad, SettingsTop + 16f, _layoutW - Pad, SettingsTop + 42f);
-        }
-
-        private SKRect ChooseFolderRect()
-        {
-            return new SKRect(Pad, SettingsTop + 48f, Pad + 104f, SettingsTop + 70f);
-        }
-
-        private SKRect OpenFolderRect()
-        {
-            return new SKRect(Pad + 110f, SettingsTop + 48f, Pad + 164f, SettingsTop + 70f);
-        }
-
-        private SKRect ClearListRect()
-        {
-            return new SKRect(Pad + 170f, SettingsTop + 48f, Pad + 244f, SettingsTop + 70f);
-        }
-
-        private float HotkeyRowTop(int slot)
-        {
-            return SettingsTop + 116f + (slot == 1 ? 32f : 0f);
-        }
-
-        private SKRect HotkeyComboRect(int slot)
-        {
-            float top = HotkeyRowTop(slot);
-            float width = _layoutW - Pad * 2f - 46f - 44f - 96f - 18f;
-            if (width < 120f) width = 120f;
-            return new SKRect(Pad, top, Pad + width, top + 26f);
-        }
-
-        private SKRect HotkeyRecordRect(int slot)
-        {
-            float top = HotkeyRowTop(slot);
-            float left = HotkeyComboRect(slot).Right + 6f;
-            return new SKRect(left, top, left + 46f, top + 26f);
-        }
-
-        private SKRect HotkeyClearRect(int slot)
-        {
-            float top = HotkeyRowTop(slot);
-            float left = HotkeyRecordRect(slot).Right + 6f;
-            return new SKRect(left, top, left + 44f, top + 26f);
-        }
-
-        private SKRect HotkeyActionRect(int slot)
-        {
-            float top = HotkeyRowTop(slot);
-            float right = _layoutW - Pad;
-            return new SKRect(right - 96f, top, right, top + 26f);
-        }
-
-        private SKRect CardRect(int slot)
-        {
-            int cols = _cols <= 0 ? 3 : _cols;
-            int row = slot / cols;
-            int col = slot % cols;
-
-            float x = Pad + col * (CardW + GapX);
-            float y = HeaderH + row * RowPitch + CardTopGap;
-            return new SKRect(x, y, x + CardW, y + CardH);
-        }
-
-        private int HitCard(float lx, float ly)
-        {
-            if (_tab != TabClip) return -1;
-
+            int added = arrived > 3 ? 3 : arrived;
             Shot[] shots = _store.Snapshot;
-            int slots = Math.Min(shots.Length, _capacity <= 0 ? 3 : _capacity);
 
-            for (int slot = 0; slot < slots; slot++)
+            for (int slot = 0; slot < total; slot++)
             {
-                SKRect body = CardRect(slot);
-                if (Contains(body, lx, ly)) return slot;
+                if (slot < added) continue;                  // 新来的那些不抖
+                if (slot >= shots.Length) break;
+
+                float distance = slot - added + 1;
+                float weight = 1f / (1f + distance * 0.55f);
+                float direction = (slot % 2 == 0) ? 1f : -1f;
+                SpringOf(shots[shots.Length - 1 - slot]).Impulse(direction * 420f * weight);
+            }
+        }
+
+        // ---- 命中 ----
+
+        private float ContentLeft()
+        {
+            int layoutCount = _count > _slots ? _count : _slots;
+            float contentW = layoutCount * (CardW + Gap) - Gap;
+            float viewportW = _slots * CardW + (_slots - 1) * Gap;
+            return Pad + viewportW - contentW + _scroll.Offset;
+        }
+
+        private int HitSlot(float lx, float ly)
+        {
+            if (ly < Pad - 6f || ly > Pad + CardH + 6f) return -1;
+
+            float contentLeft = ContentLeft();
+            for (int slot = 0; slot < _slots; slot++)
+            {
+                float x = SlotLeft(slot, contentLeft);
+                if (lx >= x && lx <= x + CardW) return slot;
             }
             return -1;
+        }
+
+        /// <summary>屏幕 x → "想放在第几格"（0 = 最右，越大越往左）。</summary>
+        private int SlotAt(float lx)
+        {
+            float contentLeft = ContentLeft();
+            for (int slot = 0; slot < _slots; slot++)
+            {
+                float x = SlotLeft(slot, contentLeft);
+                if (lx >= x - Gap * 0.5f && lx <= x + CardW + Gap * 0.5f) return slot;
+            }
+            return lx > _layoutW * 0.5f ? 0 : _slots - 1;
         }
 
         private bool HitRemove(int slot, float lx, float ly)
         {
-            SKRect body = CardRect(slot);
-            float dx = lx - (body.Right - 13f);
-            float dy = ly - (body.Top + 13f);
+            float x = SlotLeft(slot, ContentLeft());
+            float dx = lx - (x + CardW - 13f);
+            float dy = ly - (Pad + 13f);
             return dx * dx + dy * dy <= 11f * 11f;
-        }
-
-        private int HitButton(float lx, float ly)
-        {
-            if (Contains(HeaderTabRect(0), lx, ly)) return BtnTab0;
-            if (Contains(HeaderTabRect(1), lx, ly)) return BtnTab1;
-            if (Contains(HeaderButtonRect(BtnClose), lx, ly)) return BtnClose;
-
-            if (_tab == TabClip)
-            {
-                if (Contains(HeaderButtonRect(BtnCopy), lx, ly)) return BtnCopy;
-                if (Contains(HeaderButtonRect(BtnPause), lx, ly)) return BtnPause;
-                if (Contains(FooterButtonRect(BtnFolder), lx, ly)) return BtnFolder;
-                if (Contains(FooterButtonRect(BtnPeek), lx, ly)) return BtnPeek;
-                return -1;
-            }
-
-            if (Contains(DefaultFolderRect(), lx, ly)) return BtnDefaultFolder;
-            if (Contains(ChooseFolderRect(), lx, ly)) return BtnChooseFolder;
-            if (Contains(OpenFolderRect(), lx, ly)) return BtnOpenFolder;
-            if (Contains(ClearListRect(), lx, ly)) return BtnClearList;
-
-            for (int slot = 0; slot < 2; slot++)
-            {
-                if (Contains(HotkeyRecordRect(slot), lx, ly)) return BtnRecordA + slot;
-                if (Contains(HotkeyClearRect(slot), lx, ly)) return BtnClearA + slot;
-                if (Contains(HotkeyActionRect(slot), lx, ly)) return BtnActionA + slot;
-            }
-
-            return -1;
-        }
-
-        private static bool Contains(SKRect rect, float x, float y)
-        {
-            return rect.Width > 0f && x >= rect.Left && x <= rect.Right && y >= rect.Top && y <= rect.Bottom;
         }
 
         private void ToLayout(float x, float y, out float lx, out float ly)
@@ -770,38 +527,52 @@ namespace ScPad
             ToLayout(x, y, out lx, out ly);
             _mouseX = lx;
             _mouseY = ly;
+            _dragX = lx;
 
             _pressed = true;
             _pressX = lx;
             _pressY = ly;
-            _pressCard = -1;
-            _pressButton = -1;
+            _pressSlot = -1;
+            _pressRemove = -1;
+            _reordering = false;
+            _reorderFromSlot = -1;
+            _reorderToSlot = -1;
 
-            int button = HitButton(lx, ly);
-
-            // 正在录快捷键时，点别处就取消录制（否则它还在偷偷吃掉按键）
-            HotkeyHost keys = _plugin.Hotkeys;
-            if (keys != null && keys.RecordingSlot >= 0)
+            // 两侧箭头：点一下翻一页（滚轮不再接管之后，这是主要的浏览方式）
+            if (_scroll.Overflow && ly > Pad - 8f && ly < Pad + CardH + 8f)
             {
-                if (button != BtnRecordA + keys.RecordingSlot) keys.CancelRecording();
+                if (lx >= Pad - 12f && lx <= Pad + 2f)
+                {
+                    _pressed = false;
+                    NudgeScroll(-(CardW + Gap));
+                    return;
+                }
+                if (lx >= _layoutW - Pad - 2f && lx <= _layoutW - Pad + 12f)
+                {
+                    _pressed = false;
+                    NudgeScroll(CardW + Gap);
+                    return;
+                }
             }
 
-            if (button >= 0)
+            int slot = HitSlot(lx, ly);
+            if (slot < 0) return;
+
+            if (slot >= _count)
             {
-                _pressButton = button;
+                // 点空槽 = 从剪贴板上传一张
+                _pressed = false;
+                _plugin.Capture.RequestPasteFromClipboard();
                 return;
             }
-
-            int slot = HitCard(lx, ly);
-            if (slot < 0) return;
 
             if (HitRemove(slot, lx, ly))
             {
-                _pressButton = BtnRemove + slot;
+                _pressRemove = slot;
                 return;
             }
 
-            _pressCard = slot;
+            _pressSlot = slot;
         }
 
         public void OnMouseMove(float x, float y)
@@ -811,13 +582,29 @@ namespace ScPad
             _mouseX = lx;
             _mouseY = ly;
 
-            if (!_pressed || _dragging || _pressCard < 0) return;
+            if (!_pressed || _pressSlot < 0) return;
 
             float dx = lx - _pressX;
             float dy = ly - _pressY;
-            if (Math.Abs(dx) < DragThreshold && Math.Abs(dy) < DragThreshold) return;
+            if (!_reordering && Math.Abs(dx) < DragThreshold && Math.Abs(dy) < DragThreshold) return;
 
-            StartDrag(_pressCard);
+            // 默认行为就是**拖出粘贴**（核心功能：拖到任何地方松手即成一张图）。
+            // 想调整顺序请按住 Ctrl 再拖 —— 这样排序永远不会把拖出抢掉。
+            bool ctrl = CtrlProbe != null ? CtrlProbe() : IsControlDown();
+            if (!ctrl)
+            {
+                int slot = _pressSlot;
+                _pressSlot = -1;
+                _pressed = false;
+                _reordering = false;
+                StartDrag(slot);
+                return;
+            }
+
+            _reordering = true;
+            _reorderFromSlot = _pressSlot;
+            _reorderToSlot = SlotAt(lx);
+            _dragX = lx;
         }
 
         public void OnMouseUp(float x, float y)
@@ -827,69 +614,119 @@ namespace ScPad
             _mouseX = lx;
             _mouseY = ly;
 
-            if (!_pressed) return;
+            if (!_pressed && !_reordering)
+            {
+                _pressRemove = -1;
+                return;
+            }
 
             _pressed = false;
-            int button = _pressButton;
-            int slot = _pressCard;
-            _pressButton = -1;
-            _pressCard = -1;
+            int remove = _pressRemove;
+            int slot = _pressSlot;
+            _pressRemove = -1;
+            _pressSlot = -1;
 
-            if (button >= BtnRemove && button < BtnRemove + 100)
+            if (_reordering)
             {
-                RemoveSlot(button - BtnRemove);
+                int from = _reorderFromSlot;
+                int to = _reorderToSlot;
+                _reordering = false;
+                _reorderFromSlot = -1;
+                _reorderToSlot = -1;
+
+                if (from >= 0 && to >= 0 && from != to) CommitReorder(from, to);
                 return;
             }
 
-            if (button >= 0)
+            if (remove >= 0)
             {
-                // 按下与抬起不在同一个按钮上 → 当作放弃
-                if (HitButton(lx, ly) == button) RunButton(button);
+                if (HitSlot(lx, ly) == remove) RemoveSlot(remove);
                 return;
             }
 
-            if (slot >= 0) CopySlot(slot);
+            if (slot >= 0 && HitSlot(lx, ly) == slot) CopySlot(slot);
         }
 
         public void OnMouseLeave()
         {
             _pressed = false;
-            _pressCard = -1;
-            _pressButton = -1;
-            _dragging = false;
+            _pressSlot = -1;
+            _pressRemove = -1;
+            _reordering = false;
+            _reorderFromSlot = -1;
+            _reorderToSlot = -1;
             _mouseX = -1000f;
             _mouseY = -1000f;
             _dragHover = 0;
         }
 
-        private void StartDrag(int slot)
+        private void CommitReorder(int fromSlot, int toSlot)
         {
             Shot[] shots = _store.Snapshot;
-            int slots = Math.Min(shots.Length, _capacity <= 0 ? 3 : _capacity);
-            if (slot < 0 || slot >= slots) return;
+            int total = Math.Min(shots.Length, Math.Max(1, _store.Settings.MaxItems));
+            if (fromSlot >= total || toSlot >= total) return;
 
-            Shot shot = shots[shots.Length - 1 - slot];
-
-            _dragging = true;
-            _pressed = false;
-            _pressCard = -1;
+            int from = shots.Length - 1 - fromSlot;
+            int to = shots.Length - 1 - toSlot;
+            if (from == to) return;
 
             try
             {
-                shot.Sway();
-                if (_host != null)
+                _store.Move(from, to);
+
+                // 参与让位的几张震一下，表示"顺序变了"
+                Shot[] after = _store.Snapshot;
+                for (int i = 0; i < total && i < after.Length; i++)
                 {
-                    // 拖出就是「拖动粘贴」：把这张 PNG 交给别的程序
-                    _host.StartFileDrag(new string[] { shot.Path }, false);
+                    SpringOf(after[after.Length - 1 - i]).Impulse(300f);
                 }
             }
             catch (Exception ex)
             {
-                Log.Error("[ScPad] 拖出截图失败", ex);
+                Log.Error("[ScPad] 拖动排序失败", ex);
             }
-            finally
+        }
+
+        /// <summary>翻一页（往左 = 看更早，往右 = 回最新），并让卡片抖一下。</summary>
+        private void NudgeScroll(float pixels)
+        {
+            _scroll.Nudge(pixels);
+
+            Shot[] shots = _store.Snapshot;
+            for (int i = 0; i < shots.Length; i++)
             {
-                _dragging = false;
+                float direction = pixels > 0f ? 1f : -1f;
+                SpringOf(shots[shots.Length - 1 - i]).Impulse(direction * 240f);
+            }
+        }
+
+        /// <summary>拖动时用 Ctrl 区分「排序」和「拖出」；自检台可以替换它。</summary>
+        internal static Func<bool> CtrlProbe;
+
+        private static bool IsControlDown()
+        {
+            try { return (GetAsyncKeyState(VkControl) & 0x8000) != 0; }
+            catch { return false; }
+        }
+
+        private const int VkControl = 0x11;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int vk);
+
+        private void StartDrag(int slot)
+        {
+            Shot shot = ShotAt(slot);
+            if (shot == null) return;
+
+            try
+            {
+                shot.Sway();
+                if (_host != null) _host.StartFileDrag(new string[] { shot.Path }, false);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("[ScPad] 拖出截图失败", ex);
             }
         }
 
@@ -913,90 +750,15 @@ namespace ScPad
         private Shot ShotAt(int slot)
         {
             Shot[] shots = _store.Snapshot;
-            int slots = Math.Min(shots.Length, _capacity <= 0 ? 3 : _capacity);
-            if (slot < 0 || slot >= slots) return null;
-            return shots[shots.Length - 1 - slot];
+            int total = Math.Min(shots.Length, Math.Max(1, _store.Settings.MaxItems));
+            if (slot < 0 || slot >= total) return null;
+
+            int index = shots.Length - 1 - slot;
+            if (index < 0 || index >= shots.Length) return null;
+            return shots[index];
         }
 
-        private void RunButton(int button)
-        {
-            HotkeyHost keys = _plugin.Hotkeys;
-
-            switch (button)
-            {
-                case BtnCopy:
-                    _plugin.Capture.RequestCopyLatest();
-                    break;
-
-                case BtnPause:
-                    _store.SetPaused(!_store.Paused);
-                    break;
-
-                case BtnFolder:
-                    _plugin.Capture.RequestOpenFolder();
-                    break;
-
-                case BtnPeek:
-                    _store.SetAutoPeek(!_store.AutoPeek);
-                    break;
-
-                case BtnClose:
-                    if (_host != null) _host.CloseDetailPage();
-                    break;
-
-                case BtnTab0:
-                    _tab = TabClip;
-                    break;
-
-                case BtnTab1:
-                    _tab = TabSettings;
-                    break;
-
-                case BtnChooseFolder:
-                    _plugin.Capture.RequestChooseFolder();
-                    break;
-
-                case BtnOpenFolder:
-                    _plugin.Capture.RequestOpenFolder();
-                    break;
-
-                case BtnClearList:
-                    _plugin.Capture.RequestClear();
-                    break;
-
-                case BtnDefaultFolder:
-                    _store.Settings.ResetSaveFolder();
-                    _store.EnsureSaveFolder();
-                    break;
-
-                case BtnRecordA:
-                case BtnRecordB:
-                    if (keys == null) break;
-                    if (keys.RecordingSlot == button - BtnRecordA) keys.CancelRecording();
-                    else keys.StartRecording(button - BtnRecordA);
-                    break;
-
-                case BtnClearA:
-                case BtnClearB:
-                {
-                    int slot = button - BtnClearA;
-                    _store.Settings.SetHotkey(slot, HotkeySpec.None);
-                    if (keys != null) keys.Refresh();
-                    break;
-                }
-
-                case BtnActionA:
-                case BtnActionB:
-                {
-                    int slot = button - BtnActionA;
-                    _store.Settings.CycleHotkeyAction(slot);
-                    if (keys != null) keys.Refresh();
-                    break;
-                }
-            }
-        }
-
-        // ---- 命中（老接口，故意让位给鼠标事件那一套）----
+        // ---- 老接口 ----
 
         public WidgetHit HitTest(float x, float y, SKRect rect)
         {
@@ -1045,7 +807,6 @@ namespace ScPad
 
         // ---- 小动画 ----
 
-        /// <summary>刚复制 / 刚存入时卡片轻轻晃一下（Snapline 的「摇摆」）。</summary>
         private static double Wobble(Shot shot)
         {
             long ticks = shot.WobbleTicks;

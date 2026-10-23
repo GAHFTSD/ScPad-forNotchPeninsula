@@ -38,6 +38,9 @@ namespace ScPad
         private HotkeyHost _hotkeys;
         private ShotClipPanel _panel;
         private ScPadWidget _widget;
+        private ScPadSettingsPage _settingsPage;
+        private WheelHook _wheel;
+        private bool _settingsHooked;
         private bool _fontHooked;
         private bool _disposed;
 
@@ -45,7 +48,7 @@ namespace ScPad
 
         public string DisplayName { get { return "ScPad"; } }
 
-        public string Version { get { return "1.0.0-preview"; } }
+        public string Version { get { return "1.0.0-preview-2"; } }
 
         public string Author { get { return "GAHFTSD"; } }
 
@@ -54,6 +57,8 @@ namespace ScPad
         internal PluginSettings Settings { get { return _settings; } }
 
         internal ShotClipPanel Panel { get { return _panel; } }
+
+        internal ScPadWidget Widget { get { return _widget; } }
 
         internal CaptureService Capture { get { return _capture; } }
 
@@ -79,6 +84,51 @@ namespace ScPad
                 // 先注册组件，再启动采集：OnActivate 里能拿到宿主引用
                 host.RegisterWidget(_widget);
 
+                // 设置界面交给官方「插件设置中心」渲染（只在 Initialize 里注册一次！）
+                // 自定义控件是运行时按宿主的 SettingControl 反射生成的，先生成一次：
+                // 万一宿主改了抽象成员，这里会立刻露出来，而且不牵连插件的其余功能。
+                bool settingsReady = true;
+                try
+                {
+                    DynamicControls.EnsureCreated();
+                }
+                catch (Exception ex)
+                {
+                    settingsReady = false;
+                    Log.Error("[ScPad] 生成设置控件类型失败，本次跳过设置页（插件其余功能照常）", ex);
+                }
+
+                if (settingsReady)
+                {
+                    _settingsPage = new ScPadSettingsPage(_settings);
+                    try
+                    {
+                        host.RegisterSettingsPage(_settingsPage);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn("[ScPad] 注册设置页失败：" + ex.Message);
+                    }
+                }
+
+                _settings.PublishHotkeyHints();
+
+                try
+                {
+                    host.SettingsChanged += OnSettingsChanged;
+                    _settingsHooked = true;
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("[ScPad] 订阅设置变更失败：" + ex.Message);
+                }
+
+                // 滚轮：宿主窗口过程不转滚轮，代码留着（WheelHook / ScrollModel），
+                // 但**默认不启用**、也不在设置里出现 —— 用户要求未经允许不要接管滚轮。
+                // 需要时把下面两行放开即可（同时把面板/组件的 WheelRouter.Take 恢复）。
+                // _wheel = new WheelHook(WheelRouter.Push, IsWheelWanted);
+                // _wheel.Start();
+
                 _capture.Start();
                 _hotkeys.Refresh();
 
@@ -91,6 +141,35 @@ namespace ScPad
             {
                 Log.Error("[ScPad] 插件初始化失败", ex);
             }
+        }
+
+        private void OnSettingsChanged()
+        {
+            CaptureService capture = _capture;
+            if (capture == null) return;
+            try { capture.RequestSettingsChanged(); }
+            catch (Exception ex) { Log.Warn("[ScPad] 处理设置变更失败：" + ex.Message); }
+        }
+
+        /// <summary>滚轮钩子的闸门：截图夹有溢出才吃滚轮（由渲染线程每帧更新）。</summary>
+        private bool IsWheelWanted()
+        {
+            ScPadWidget widget = _widget;
+            return widget != null && widget.CanScroll;
+        }
+
+        /// <summary>设置变了（缩略图百分比/上限），让宿主重测组件宽度。</summary>
+        internal void NotifyLayoutChanged()
+        {
+            try
+            {
+                if (_host != null) _host.InvalidateWidgetLayout();
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("[ScPad] 请求重新布局失败：" + ex.Message);
+            }
+            WheelRouter.Clear();
         }
 
         /// <summary>快捷键按下：转到采集线程去执行（别在快捷键线程里直接动宿主）。</summary>
@@ -125,21 +204,20 @@ namespace ScPad
             catch { }
         }
 
-        /// <summary>第一次加载时打一声招呼，之后不再打扰。</summary>
+        /// <summary>
+        /// 加载/重载后打一声招呼：告诉用户岛上那个小框怎么用。
+        /// 官方要求每次安装或重载都提示一次，所以这里不再用「已提示过」的标记。
+        /// </summary>
         private void Welcome(IPluginHost host)
         {
             try
             {
-                if (host.GetSetting("welcomed", "0") == "1") return;
-                host.SetSetting("welcomed", "1");
 
-                HotkeySpec hotkey = _settings.HotkeyA;
-                string extra = hotkey.IsSet ? "（" + hotkey.Text + " 可随手抓一张）" : "";
-
-                Reminders.Post(host, "ScPad 已就绪",
-                    "截图或复制图片后会自动存入灵动岛。点缩略图打开截图夹；面板里的「设置」页可以改保存位置和快捷键。" + extra,
+                // 文案按官方要求固定，不随用户改键变化
+                Reminders.Post(host, "截图夹已就绪",
+                    "Ctrl+PrtSc 以开始。在「插件设置中心」中详细设置。",
                     delegate { OpenPanel(); },
-                    TimeSpan.FromSeconds(7));
+                    TimeSpan.FromSeconds(9));
             }
             catch (Exception ex)
             {
@@ -188,6 +266,26 @@ namespace ScPad
                 }
             }
             catch { }
+
+            try
+            {
+                if (_settingsHooked)
+                {
+                    _host.SettingsChanged -= OnSettingsChanged;
+                    _settingsHooked = false;
+                }
+            }
+            catch { }
+
+            try
+            {
+                if (_wheel != null) _wheel.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("[ScPad] 卸载滚轮钩子失败：" + ex.Message);
+            }
+            _wheel = null;
 
             // 先摘掉快捷键，免得卸载过程中还往采集线程派活
             try

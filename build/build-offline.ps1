@@ -153,7 +153,9 @@ try {
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
     $plugin = Join-Path $OutDir 'ScPad.dll'
 
-    $sources = Get-ChildItem $projectDir -Filter '*.cs' | Where-Object { $_.DirectoryName -eq $projectDir } | ForEach-Object { $_.FullName }
+    $sources = Get-ChildItem $projectDir -Filter '*.cs' |
+    Where-Object { $_.DirectoryName -eq $projectDir } |
+    ForEach-Object { $_.FullName }
     if (-not $sources) { throw "在 $projectDir 下找不到任何 .cs 源码" }
 
     Invoke-Csc $plugin $sources @('/r:' + $stub)

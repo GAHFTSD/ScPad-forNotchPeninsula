@@ -74,7 +74,7 @@ namespace ScPad
     /// </summary>
     internal sealed class ShotStore
     {
-        internal const int MaxItems = 12;
+
 
         private const string StateHeader = "# ScPad state v2";
         private const string FilePrefix = "ScPad-";
@@ -94,6 +94,11 @@ namespace ScPad
         private readonly Random _random = new Random();
 
         private string _lastFolderError = "";
+
+        /// <summary>AddCaptured 返回 null 的原因："dup" = 判重跳过，"error" = 写盘/解码失败。</summary>
+        internal string LastSkipReason { get { return _lastSkipReason; } }
+
+        private volatile string _lastSkipReason = "";
 
         internal ShotStore(IPluginHost host, PluginSettings settings)
         {
@@ -125,6 +130,32 @@ namespace ScPad
         }
 
         internal Shot[] Snapshot { get { return Volatile.Read(ref _snapshot); } }
+
+        /// <summary>当前生效的截图上限（设置里的「截图夹上限」，4~100）。</summary>
+        internal int Limit { get { return _settings.MaxItems; } }
+
+        /// <summary>上限被调小之后，把超出的最老几张从列表里移出（插件自己收的进回收目录）。</summary>
+        internal void TrimToLimit()
+        {
+            var dropped = new System.Collections.Generic.List<Shot>();
+            lock (_lock)
+            {
+                int limit = Limit;
+                while (_items.Count > limit)
+                {
+                    dropped.Add(_items[0]);
+                    _hashes.Remove(_items[0].Hash);
+                    _items.RemoveAt(0);
+                }
+            }
+
+            if (dropped.Count == 0) return;
+            for (int i = 0; i < dropped.Count; i++)
+            {
+                if (dropped[i].Owned) RecycleFile(dropped[i].Path);
+            }
+            Publish(true);
+        }
 
         /// <summary>图片保存目录（设置项，默认 = 系统默认截图位置）。</summary>
         internal string SaveFolder { get { return _settings.SaveFolder; } }
@@ -264,14 +295,22 @@ namespace ScPad
             try { full = SKBitmap.Decode(png); }
             catch (Exception ex) { Log.Warn("[ScPad] 解码截屏失败：" + ex.Message); }
 
-            if (full == null) return null;
+            if (full == null)
+            {
+                _lastSkipReason = "error";
+                return null;
+            }
 
             try
             {
                 string hash = Hash(png, full.Width, full.Height);
                 lock (_lock)
                 {
-                    if (_hashes.Contains(hash)) return null;
+                    if (_hashes.Contains(hash))
+                    {
+                        _lastSkipReason = "dup";
+                        return null;
+                    }
                 }
 
                 string folder = _settings.SaveFolder;
@@ -291,6 +330,7 @@ namespace ScPad
             }
             catch (Exception ex)
             {
+                _lastSkipReason = "error";
                 Log.Warn("[ScPad] 保存截屏失败：" + ex.Message);
                 return null;
             }
@@ -386,7 +426,8 @@ namespace ScPad
                     _hashes.Add(hash);
 
                     // 超过上限就从最老的那张开始挤下去（外部文件只从列表移出，绝不删原文件）
-                    while (_items.Count > MaxItems)
+                    int limit = Limit;
+                    while (_items.Count > limit)
                     {
                         _hashes.Remove(_items[0].Hash);
                         _items.RemoveAt(0);
@@ -430,6 +471,29 @@ namespace ScPad
                 }
             }
             if (removed) Publish(true);
+        }
+
+        /// <summary>
+        /// 在面板里拖动排序：把第 from 张插到第 to 张的位置（数组下标，0 = 最老）。
+        /// 顺序会写进 state.txt，重启后保持。
+        /// </summary>
+        internal void Move(int from, int to)
+        {
+            bool changed = false;
+            lock (_lock)
+            {
+                if (from < 0 || from >= _items.Count) return;
+                if (to < 0) to = 0;
+                if (to >= _items.Count) to = _items.Count - 1;
+                if (from == to) return;
+
+                Shot moved = _items[from];
+                _items.RemoveAt(from);
+                _items.Insert(to, moved);
+                changed = true;
+            }
+
+            if (changed) Publish(true);
         }
 
         // ---- 移出 ----
@@ -493,6 +557,8 @@ namespace ScPad
 
         // ---- 内部工具 ----
 
+        private int _lastVisibleCount = -1;
+
         private void Publish(bool save)
         {
             Shot[] next;
@@ -500,8 +566,14 @@ namespace ScPad
 
             Volatile.Write(ref _snapshot, next);
 
-            try { _host.InvalidateWidgetLayout(); }
-            catch (Exception ex) { Log.Warn("[ScPad] 请求重新布局失败：" + ex.Message); }
+            // 岛上最多叠 4 张：第 5 张之后宽度不变，就别每次都惊动宿主重排布局了
+            int visible = next.Length < 4 ? next.Length : 4;
+            if (visible != _lastVisibleCount)
+            {
+                _lastVisibleCount = visible;
+                try { _host.InvalidateWidgetLayout(); }
+                catch (Exception ex) { Log.Warn("[ScPad] 请求重新布局失败：" + ex.Message); }
+            }
 
             if (save) Save(next);
         }

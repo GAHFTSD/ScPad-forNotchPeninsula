@@ -212,11 +212,17 @@ namespace NotchPeninsula.Plugins
         protected SettingControl(string key, string label) { Key = key; Label = label; }
         public string Key { get; private set; }
         public string Label { get; private set; }
+
+        // 真宿主里 SettingControl 是 abstract record，带一个 abstract 的克隆方法 <Clone>$；
+        // C# 5 打不出 <Clone>$ 这个标识符，所以替身用「抽象无参、返回 SettingControl」的占位方法，
+        // 让自检台也能覆盖到「派生的自定义控件必须实现抽象成员」这条路径。
+        protected abstract SettingControl CloneCore();
     }
 
     public sealed class ToggleSetting : SettingControl
     {
         public ToggleSetting(string key, string label, bool defaultValue) : base(key, label) { DefaultValue = defaultValue; }
+        protected override SettingControl CloneCore() { return this; }
         public bool DefaultValue { get; private set; }
     }
 
@@ -227,6 +233,7 @@ namespace NotchPeninsula.Plugins
             Options = options;
             DefaultIndex = defaultIndex;
         }
+        protected override SettingControl CloneCore() { return this; }
         public string[] Options { get; private set; }
         public int DefaultIndex { get; private set; }
     }
@@ -237,6 +244,7 @@ namespace NotchPeninsula.Plugins
         {
             Min = min; Max = max; Step = step; Default = defaultValue;
         }
+        protected override SettingControl CloneCore() { return this; }
         public float Min { get; private set; }
         public float Max { get; private set; }
         public float Step { get; private set; }

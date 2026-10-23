@@ -44,6 +44,21 @@ namespace ScPad
 
         private long _peekDeadlineTicks;
 
+        private SettingsButtonPoller _buttons;
+
+        // 设置变更：宿主可能在一次拖动里连发几十个事件，合并成"每 250ms 处理一次"
+        private int _settingsDirty;
+        private int _settingsApplying;
+
+        // 上一次真正应用过的值 —— 只有变了才做那些有代价的事（重注册热键 / 重写 state / 重排布局）
+        private int _appliedMaxItems = -1;
+        private double _appliedScale = -1;
+        private string _appliedFolder;
+        private bool _appliedPaused;
+        private int _appliedSlots = -1;
+        private string _appliedHotkeyA;
+        private string _appliedHotkeyB;
+
         internal CaptureService(ScPadPlugin plugin, ShotStore store, IPluginHost host)
         {
             _plugin = plugin;
@@ -75,6 +90,9 @@ namespace ScPad
                 EnsureWatcher();
                 _lastSequence = ClipboardOps.Sequence();
 
+                // 设置中心里的按钮（选择文件夹 / 录制快捷键 / 恢复默认…）
+                _buttons = new SettingsButtonPoller(_host, OnSettingsButton);
+
                 // 状态文件与首次导入放到后台，别卡住宿主的 Initialize
                 _jobs.Enqueue(delegate
                 {
@@ -105,6 +123,16 @@ namespace ScPad
                     }
 
                     try { CheckPeek(); } catch { }
+
+                    try { PumpSettingsChanges(); }
+                    catch (Exception ex) { Log.Warn("[ScPad] 应用设置变更失败：" + ex.Message); }
+
+                    // 设置中心里的「按钮」靠比对自增计数发现；测一下开销可控就每 3 个 tick 查一次
+                    if ((_ticks % 3) == 0)
+                    {
+                        try { if (_buttons != null) _buttons.Poll(); }
+                        catch (Exception ex) { Log.Warn("[ScPad] 设置按钮轮询失败：" + ex.Message); }
+                    }
 
                     _wake.WaitOne(150);
                     _wake.Reset();
@@ -262,11 +290,16 @@ namespace ScPad
 
         private void OnCaptured(Shot shot)
         {
+            OnCaptured(shot, false);
+        }
+
+        private void OnCaptured(Shot shot, bool panelAlreadyOpen)
+        {
             try { shot.Sway(); } catch { }
 
             try
             {
-                if (_store.AutoPeek)
+                if (_store.AutoPeek && !panelAlreadyOpen)
                 {
                     Interlocked.Exchange(ref _peekDeadlineTicks, DateTime.UtcNow.AddSeconds(PeekSeconds).Ticks);
                     _host.TryOpenDetailPage(ScPadPlugin.WidgetId);
@@ -345,8 +378,10 @@ namespace ScPad
 
         private void ScreenCaptureNow()
         {
+            bool hide = _store.Settings.HideOnCapture;
+
             string error;
-            byte[] png = ScreenCapture.CaptureAllScreens(out error);
+            byte[] png = ScreenCapture.CaptureAllScreens(hide, ApplyDim, out error);
             if (png == null)
             {
                 Reminders.Post(_host, "ScPad", "抓屏失败：" + (error == null ? "未知原因" : error), null);
@@ -356,13 +391,74 @@ namespace ScPad
             Shot shot = _store.AddCaptured(png);
             if (shot == null)
             {
-                Reminders.Post(_host, "ScPad", "这张和已有截图一模一样，没有重复存入", null);
+                // 判重提示放在面板里（不弹通知）
+                string reason = _store.LastSkipReason;
+                if (reason == "dup") Hint("这张已经存过了");
+                else Hint("这张没能存进来");
                 return;
             }
 
             Log.Info("[ScPad] 抓屏并存入：" + shot.Path);
             OnCaptured(shot);
             CopyNow(shot);
+        }
+
+        /// <summary>抓屏时让插件自己的组件淡出/淡入（由 ScreenCapture 在抓的那一瞬间调用）。</summary>
+        private void ApplyDim(float amount)
+        {
+            try
+            {
+                if (_plugin.Widget != null) _plugin.Widget.SetDim(amount);
+                if (_plugin.Panel != null) _plugin.Panel.SetDim(amount);
+            }
+            catch { }
+        }
+
+        /// <summary>提示：优先写在面板里；面板没开就等下次打开时给。</summary>
+        private void Hint(string text)
+        {
+            try
+            {
+                if (_plugin.Panel != null) _plugin.Panel.ShowHint(text);
+            }
+            catch { }
+        }
+
+        /// <summary>从剪贴板上传一张（面板里点空槽 / 设置中心的按钮）。</summary>
+        internal void RequestPasteFromClipboard()
+        {
+            _jobs.Enqueue(delegate { PasteFromClipboardNow(); });
+            _wake.Set();
+        }
+
+        private void PasteFromClipboardNow()
+        {
+            try
+            {
+                byte[] png = ClipboardOps.TryReadImage();
+                if (png == null)
+                {
+                    Hint("剪贴板里没有图片");
+                    return;
+                }
+
+                Shot shot = _store.AddCaptured(png);
+                if (shot == null)
+                {
+                    string reason = _store.LastSkipReason;
+                    Hint(reason == "dup" ? "这张已经存过了" : "这张没能存进来");
+                    return;
+                }
+
+                Log.Info("[ScPad] 从剪贴板上传：" + shot.Path);
+                Hint("已从剪贴板存入");
+                OnCaptured(shot, true);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("[ScPad] 从剪贴板上传失败", ex);
+                Hint("从剪贴板上传失败");
+            }
         }
 
         /// <summary>快捷键触发的动作（按设置里那个槽位的动作类型执行）。</summary>
@@ -446,6 +542,196 @@ namespace ScPad
         }
 
         /// <summary>换保存目录：走系统文件夹选择框（必须在这个 STA 线程上弹）。</summary>
+        /// <summary>
+        /// 用户在设置中心里改了任何一项。
+        /// 只置一个脏标记（不直接干活）：宿主拖滑块时会连发大量事件，逐条处理会把自己累死。
+        /// </summary>
+        internal void RequestSettingsChanged()
+        {
+            System.Threading.Interlocked.Exchange(ref _settingsDirty, 1);
+            _wake.Set();
+        }
+
+        /// <summary>采集线程的 tick 里调用：把攒下来的设置变更一次性应用掉。</summary>
+        private void PumpSettingsChanges()
+        {
+            if (System.Threading.Interlocked.Exchange(ref _settingsDirty, 0) == 0) return;
+            ApplySettingsChanged();
+        }
+
+        private void ApplySettingsChanged()
+        {
+            // 防重入：万一某处又写了设置（会再触发一次 SettingsChanged），这里直接吞掉
+            if (System.Threading.Interlocked.CompareExchange(ref _settingsApplying, 1, 0) != 0) return;
+
+            try
+            {
+                _store.Settings.Reload();
+
+                PluginSettings settings = _store.Settings;
+                bool needLayout = false;
+                bool needWarm = false;
+
+                int maxItems = settings.MaxItems;
+                if (maxItems != _appliedMaxItems)
+                {
+                    _appliedMaxItems = maxItems;
+                    _store.TrimToLimit();
+                    needLayout = true;
+                }
+
+                double scale = settings.EffectiveThumbScale;
+                if (Math.Abs(scale - _appliedScale) > 0.001)
+                {
+                    _appliedScale = scale;
+                    needLayout = true;
+                }
+
+                bool paused = settings.Paused;
+                if (paused != _appliedPaused)
+                {
+                    _appliedPaused = paused;
+                    needLayout = true;
+                }
+
+                int slots = settings.PanelSlots;
+                if (slots != _appliedSlots)
+                {
+                    _appliedSlots = slots;
+                    needLayout = true;
+                }
+
+                string folder = settings.SaveFolder;
+                if (!string.Equals(folder, _appliedFolder, StringComparison.OrdinalIgnoreCase))
+                {
+                    _appliedFolder = folder;
+                    bool folderOk = _store.EnsureSaveFolder();
+                    EnsureWatcher();
+                    needWarm = true;
+
+                    if (!folderOk && !string.IsNullOrEmpty(_store.SaveFolderError))
+                    {
+                        Reminders.Post(_host, "保存位置不可用", _store.SaveFolderError, null);
+                    }
+                }
+
+                // 热键：只有组合真的变了才重注册（RegisterHotKey/UnregisterHotKey 都不便宜）
+                string hotkeyA = settings.HotkeyA.Text + "|" + settings.HotkeyAAction.ToString();
+                string hotkeyB = settings.HotkeyB.Text + "|" + settings.HotkeyBAction.ToString();
+                bool hotkeyChanged = !string.Equals(hotkeyA, _appliedHotkeyA, StringComparison.Ordinal)
+                                     || !string.Equals(hotkeyB, _appliedHotkeyB, StringComparison.Ordinal);
+                if (hotkeyChanged)
+                {
+                    _appliedHotkeyA = hotkeyA;
+                    _appliedHotkeyB = hotkeyB;
+                    if (_plugin.Hotkeys != null) _plugin.Hotkeys.Refresh();
+                    needWarm = true;
+                }
+
+                settings.PublishHotkeyHints();
+
+                if (needLayout) _plugin.NotifyLayoutChanged();
+                if (needWarm && _buttons != null)
+                {
+                    // 让按钮轮询重新对齐基准，避免"恢复默认"之后又把自己当成被点了一次
+                    _buttons = new SettingsButtonPoller(_host, OnSettingsButton);
+                }
+
+                Log.Info("[ScPad] 设置已更新：上限 " + maxItems.ToString() + " 张，缩略图 " +
+                         settings.EffectiveThumbScale.ToString() + "%，保存位置 " + folder);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("[ScPad] 应用设置变更失败", ex);
+            }
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _settingsApplying, 0);
+            }
+        }
+
+        /// <summary>设置中心里点了某个按钮（Key 命名的那个）。</summary>
+        private void OnSettingsButton(string key)
+        {
+            try
+            {
+                switch (key)
+                {
+                    case "pickFolder":
+                        RequestChooseFolder();
+                        break;
+
+                    case "openFolder":
+                        RequestOpenFolder();
+                        break;
+
+                    case "recordHotkeyA":
+                        StartRecording(0);
+                        break;
+
+                    case "recordHotkeyB":
+                        StartRecording(1);
+                        break;
+
+                    case "clearHotkeyA":
+                        ClearHotkey(0);
+                        break;
+
+                    case "clearHotkeyB":
+                        ClearHotkey(1);
+                        break;
+
+                    case "pasteFromClipboard":
+                        RequestPasteFromClipboard();
+                        break;
+
+                    case "resetAll":
+                        ResetAll();
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("[ScPad] 设置按钮处理失败：" + key, ex);
+            }
+        }
+
+        private void StartRecording(int slot)
+        {
+            if (_plugin.Hotkeys == null) return;
+            _plugin.Hotkeys.StartRecording(slot);
+            Reminders.Post(_host, "录制快捷键 " + (slot == 0 ? "1" : "2"),
+                "现在按下想用的组合键（至少一个修饰键，或 F1~F24）；Esc 取消。", null);
+        }
+
+        private void ClearHotkey(int slot)
+        {
+            PluginSettings settings = _store.Settings;
+            settings.SetHotkey(slot, HotkeySpec.None);
+            if (_plugin.Hotkeys != null) _plugin.Hotkeys.Refresh();
+            settings.PublishHotkeyHints();
+            Log.Info("[ScPad] 已清除快捷键 " + (slot + 1).ToString());
+        }
+
+        private void ResetAll()
+        {
+            PluginSettings settings = _store.Settings;
+            settings.Paused = false;
+            settings.AutoPeek = true;
+            settings.SetMaxItems(PluginSettings.DefaultShots);
+            settings.SetThumbScale(0);
+            settings.SetPanelSlots(PluginSettings.DefaultSlots);
+            settings.SetHideOnCapture(true);
+            settings.SetClipboardEnabled(true);
+            settings.SetHotkey(0, new HotkeySpec(HotkeySpec.ModControl, HotkeySpec.VkSnapshot));
+            settings.SetHotkeyAction(0, PluginSettings.ActionCapture);
+            settings.SetHotkey(1, HotkeySpec.None);
+            settings.SetHotkeyAction(1, PluginSettings.ActionTogglePanel);
+
+            ApplySettingsChanged();
+            Reminders.Post(_host, "已恢复默认设置", "保存位置与已收集的截图没有改动。", null);
+        }
+
         internal void RequestChooseFolder()
         {
             _jobs.Enqueue(delegate { ChooseFolderNow(); });

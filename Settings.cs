@@ -221,7 +221,8 @@ namespace ScPad
 
     /// <summary>
     /// 插件自己的设置。全部存进宿主的注册表（`Plugin.com.gahftsd.scpad.*`），
-    /// 宿主没有给插件做设置页的能力，所以界面得自己画 —— 见 ShotClipPanel 的「设置」页。
+    /// 界面交给官方「插件设置中心」（NpsSettingsHub）渲染 —— 见 ScPadSettingsPage。
+    /// 用户的每一次改动都会经宿主的 SettingsChanged 回到这里，调用 Reload() 重新读一遍。
     /// </summary>
     internal sealed class PluginSettings
     {
@@ -240,6 +241,26 @@ namespace ScPad
         private const string KeyHotkeyAAction = "hotkeyAAction";
         private const string KeyHotkeyB = "hotkeyB";
         private const string KeyHotkeyBAction = "hotkeyBAction";
+        private const string KeyMaxItems = "maxShots";
+        private const string KeyThumbScale = "thumbScale";
+        private const string KeyPanelSlots = "panelSlots";
+        private const string KeyHideOnCapture = "hideOnCapture";
+        private const string KeyHotkeyAView = "hotkeyAView";
+        private const string KeyHotkeyBView = "hotkeyBView";
+
+        /// <summary>截图夹最多留几张（临时存储上限）。</summary>
+        internal const int MinShots = 4;
+        internal const int MaxShots = 100;
+        internal const int DefaultShots = 10;
+
+        /// <summary>缩略图百分比的可调范围。</summary>
+        internal const int MinScale = 25;
+        internal const int MaxScale = 200;
+
+        /// <summary>面板预留格数（空槽也算），默认 4。</summary>
+        internal const int MinSlots = 1;
+        internal const int MaxSlots = 8;
+        internal const int DefaultSlots = 4;
 
         private readonly IPluginHost _host;
         private readonly object _lock = new object();
@@ -252,6 +273,10 @@ namespace ScPad
         private int _hotkeyAAction;
         private HotkeySpec _hotkeyB;
         private int _hotkeyBAction;
+        private int _maxItems;
+        private int _thumbScale;
+        private int _panelSlots;
+        private bool _hideOnCapture;
 
         internal PluginSettings(IPluginHost host)
         {
@@ -272,6 +297,191 @@ namespace ScPad
 
             if (!IsKnownAction(_hotkeyAAction)) _hotkeyAAction = ActionCapture;
             if (!IsKnownAction(_hotkeyBAction)) _hotkeyBAction = ActionTogglePanel;
+
+            _maxItems = ClampShots((int)ReadNumber(KeyMaxItems, DefaultShots));
+            _thumbScale = ClampScale((int)ReadNumber(KeyThumbScale, 0));   // 0 = 还没设过 → 用推荐值
+            _panelSlots = ClampSlots((int)ReadNumber(KeyPanelSlots, DefaultSlots));
+            _hideOnCapture = Read(KeyHideOnCapture, "1") != "0";   // 默认开：连续截图时藏一下岛
+
+            SanitizeHotkeys();
+        }
+
+        /// <summary>
+        /// 净化快捷键：**单独一个 PrtSc（不带修饰键）会抢走系统截图键**，绝对不允许。
+        /// 历史遗留、手工改注册表写进来的非法组合，一律恢复成默认
+        /// （槽 1 = Ctrl + PrtSc，槽 2 = 未设置），并写回注册表。
+        /// </summary>
+        private void SanitizeHotkeys()
+        {
+            bool changed = false;
+
+            if (!IsSlotAcceptable(_hotkeyA))
+            {
+                _hotkeyA = new HotkeySpec(HotkeySpec.ModControl, HotkeySpec.VkSnapshot);
+                Write(KeyHotkeyA, "2:" + HotkeySpec.VkSnapshot.ToString());
+                changed = true;
+            }
+
+            if (!IsSlotAcceptable(_hotkeyB))
+            {
+                _hotkeyB = HotkeySpec.None;
+                Write(KeyHotkeyB, "");
+                changed = true;
+            }
+
+            if (changed) Log.Warn("[ScPad] 快捷键里有非法组合（例如单独 PrtSc），已恢复默认");
+        }
+
+        private static bool IsSlotAcceptable(HotkeySpec spec)
+        {
+            if (spec == null || !spec.IsSet) return true;
+
+            // 系统截图键：单独按下必须留给 Windows，插件永不占用
+            if (spec.Modifiers == 0 && spec.Key == HotkeySpec.VkSnapshot) return false;
+
+            return HotkeySpec.Validate(spec.Modifiers, spec.Key) == null;
+        }
+
+        /// <summary>
+        /// 用户在某处（设置中心 / 面板）改了设置 → 重新读一遍。
+        /// 宿主的 SettingsChanged 只告诉「变了」，不告诉「变成什么」。
+        /// </summary>
+        internal void Reload()
+        {
+            string folder = Read(KeySaveFolder, "");
+            HotkeySpec hotkeyA = HotkeySpec.Parse(Read(KeyHotkeyA, ""), new HotkeySpec(HotkeySpec.ModControl, HotkeySpec.VkSnapshot));
+            HotkeySpec hotkeyB = HotkeySpec.Parse(Read(KeyHotkeyB, ""), HotkeySpec.None);
+            int actionA = (int)ReadNumber(KeyHotkeyAAction, ActionCapture);
+            int actionB = (int)ReadNumber(KeyHotkeyBAction, ActionTogglePanel);
+            if (!IsKnownAction(actionA)) actionA = ActionCapture;
+            if (!IsKnownAction(actionB)) actionB = ActionTogglePanel;
+
+            lock (_lock)
+            {
+                _saveFolder = string.IsNullOrEmpty(folder) ? ShotStore.SystemScreenshotsFolder() : folder;
+                _paused = Read(KeyPaused, "0") == "1";
+                _clipboard = Read(KeyClipboard, "1") != "0";
+                _autoPeek = Read(KeyAutoPeek, "1") != "0";
+                _hotkeyA = hotkeyA;
+                _hotkeyB = hotkeyB;
+                _hotkeyAAction = actionA;
+                _hotkeyBAction = actionB;
+                _maxItems = ClampShots((int)ReadNumber(KeyMaxItems, DefaultShots));
+                _thumbScale = ClampScale((int)ReadNumber(KeyThumbScale, 0));
+                _panelSlots = ClampSlots((int)ReadNumber(KeyPanelSlots, DefaultSlots));
+                _hideOnCapture = Read(KeyHideOnCapture, "1") != "0";
+            }
+        }
+
+        /// <summary>截图上限（4~100）。</summary>
+        internal int MaxItems { get { lock (_lock) return _maxItems; } }
+
+        internal void SetMaxItems(int value)
+        {
+            value = ClampShots(value);
+            lock (_lock) _maxItems = value;
+            Write(KeyMaxItems, value.ToString());
+        }
+
+
+        /// <summary>用户自定义的缩略图百分比（25~200）；没设过时返回 0。</summary>
+        internal int ThumbScaleRaw { get { lock (_lock) return _thumbScale; } }
+
+        internal void SetThumbScale(int value)
+        {
+            value = ClampScale(value);
+            lock (_lock) _thumbScale = value;
+            Write(KeyThumbScale, value.ToString());
+        }
+
+        internal void SetClipboardEnabled(bool value)
+        {
+            ClipboardEnabled = value;
+        }
+
+
+        /// <summary>
+        /// 实际生效的缩略图百分比：用户没动过（0）就用「按上限推荐」的值，
+        /// 动过就用用户的（夹在 25~200）。这样设置里只留一个数值项，不用再摆开关。
+        /// </summary>
+        internal int EffectiveThumbScale
+        {
+            get
+            {
+                int count;
+                int custom;
+                lock (_lock) { count = _maxItems; custom = _thumbScale; }
+                if (custom <= 0) return RecommendScale(count);
+                return ClampScale(custom);
+            }
+        }
+
+        /// <summary>
+        /// 「数量 → 推荐缩略百分比」：以 10 张 = 100% 为基准的幂曲线，
+        /// 4 张 ≈ 135%，10 张 = 100%，16 张 ≈ 75%，100 张 ≈ 25%（都夹在 25~200 内）。
+        /// </summary>
+        internal static int RecommendScale(int maxItems)
+        {
+            maxItems = ClampShots(maxItems);
+            double ratio = (double)DefaultShots / maxItems;
+            int pct = (int)Math.Round(100.0 * Math.Pow(ratio, 0.6), MidpointRounding.AwayFromZero);
+            return ClampScale(pct);
+        }
+
+        /// <summary>面板预留格数（1~8，默认 4）。</summary>
+        internal int PanelSlots { get { lock (_lock) return _panelSlots; } }
+
+        internal void SetPanelSlots(int value)
+        {
+            value = ClampSlots(value);
+            lock (_lock) _panelSlots = value;
+            Write(KeyPanelSlots, value.ToString());
+        }
+
+        /// <summary>抓屏时要不要先把灵动岛藏起来（默认开）。</summary>
+        internal bool HideOnCapture { get { lock (_lock) return _hideOnCapture; } }
+
+        internal void SetHideOnCapture(bool value)
+        {
+            lock (_lock) _hideOnCapture = value;
+            Write(KeyHideOnCapture, value ? "1" : "0");
+        }
+
+        internal static int ClampSlots(int value)
+        {
+            if (value < MinSlots) return MinSlots;
+            if (value > MaxSlots) return MaxSlots;
+            return value;
+        }
+
+        internal static int ClampShots(int value)
+        {
+            if (value < MinShots) return MinShots;
+            if (value > MaxShots) return MaxShots;
+            return value;
+        }
+
+        internal static int ClampScale(int value)
+        {
+            if (value <= 0) return 0;
+            if (value < MinScale) return MinScale;
+            if (value > MaxScale) return MaxScale;
+            return value;
+        }
+
+        /// <summary>
+        /// 把「当前快捷键」的展示文本写进注册表，设置中心用只读文本项显示它。
+        ///
+        /// ⚠️ 只在值真的变了才写：宿主 SetSetting 会反过来触发本插件的 SettingsChanged，
+        /// 无条件写会让「设置变更处理 → 写设置 → 再触发」自激成死循环（1.1.0 的卡顿/崩溃就是它）。
+        /// </summary>
+        internal void PublishHotkeyHints()
+        {
+            string a = HotkeyA.IsSet ? HotkeyA.Text : "未设置";
+            string b = HotkeyB.IsSet ? HotkeyB.Text : "未设置";
+
+            if (!string.Equals(Read(KeyHotkeyAView, ""), a, StringComparison.Ordinal)) Write(KeyHotkeyAView, a);
+            if (!string.Equals(Read(KeyHotkeyBView, ""), b, StringComparison.Ordinal)) Write(KeyHotkeyBView, b);
         }
 
         // ---- 保存位置 ----
