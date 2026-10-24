@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using NotchPeninsula.Plugins;
 
@@ -60,9 +60,15 @@ namespace ScPad
 
                 list.Add(new ToggleSetting("clipboard", "收集剪贴板里的图片（不只是截图）", true));
 
-                list.Add(new ToggleSetting("paused", "暂停收集（临时不收新截图）", false));
+                list.Add(new ChoiceSetting("collectMode", "收集模式（自动 / 手动 / 关闭）",
+                    new string[] { "自动收集", "手动收集", "关闭收集" }, _settings.CollectMode));
 
                 list.Add(new ToggleSetting("hideOnCapture", "抓屏时先藏起灵动岛", true));
+
+                list.Add(new ToggleSetting("panelActions", "面板底部显示设置区（更多设置 / 停止收集 / 图片编辑）", true));
+
+                list.Add(new ChoiceSetting("editorMode", "「图片编辑」用哪个应用",
+                    new string[] { "照片（系统默认）", "画图" }, 0));
 
                 // ---- 保存位置 ----
                 list.Add(DynamicControls.Text("saveFolder",
@@ -90,6 +96,12 @@ namespace ScPad
                     ActionOptions, ActionIndexOf(_settings.HotkeyBAction)));
 
                 // ---- 其它 ----
+                list.Add(DynamicControls.Action("showGuide", "重新查看新手引导", "打开",
+                    "在面板里再放一次 4 张教学卡（截图 / 挂图 / 编辑 / 收集模式）"));
+
+                list.Add(DynamicControls.Action("openIssues", "反馈问题（GitHub Issues）", "打开",
+                    "在 GitHub 同名仓库（ScPad-forNotchPeninsula）的 Issues 里反馈；打不开时可直接去仓库提 issue"));
+
                 list.Add(DynamicControls.Action("resetAll", "恢复默认设置", "恢复默认",
                     "只重置 ScPad 的设置项，不删除已收集的截图"));
 
@@ -127,7 +139,7 @@ namespace ScPad
     {
         private static readonly string[] Keys = new string[]
         {
-            "pickFolder", "recordHotkeyA", "recordHotkeyB", "resetAll"
+            "pickFolder", "recordHotkeyA", "recordHotkeyB", "showGuide", "openIssues", "resetAll"
         };
 
         private readonly IPluginHost _host;

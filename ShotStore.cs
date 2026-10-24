@@ -166,13 +166,22 @@ namespace ScPad
 
         internal bool Paused { get { return _settings.Paused; } }
 
+        /// <summary>收集模式：0 = 自动，1 = 手动，2 = 关闭。</summary>
+        internal int CollectMode { get { return _settings.CollectMode; } }
+
+        internal void SetCollectMode(int mode)
+        {
+            _settings.SetCollectMode(mode);
+        }
+
         internal bool AutoPeek { get { return _settings.AutoPeek; } }
 
         internal bool ClipboardEnabled { get { return _settings.ClipboardEnabled; } }
 
         internal void SetPaused(bool paused)
         {
-            _settings.Paused = paused;
+            // 兼容旧调用：暂停 = 关闭收集，恢复 = 自动收集
+            _settings.SetCollectMode(paused ? PluginSettings.CollectOff : PluginSettings.CollectAuto);
         }
 
         internal void SetAutoPeek(bool on)
@@ -321,8 +330,9 @@ namespace ScPad
                     try { Directory.CreateDirectory(folder); } catch { }
                 }
 
-                string name = FilePrefix + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" +
-                              Guid.NewGuid().ToString("N").Substring(0, 6) + ".png";
+                // 命名：SP-yyMMdd-HHmmss-xxxx.png（面板里只显示 SP-X，X 是面板顺序号）
+                string name = "SP-" + DateTime.Now.ToString("yyMMdd-HHmmss") + "-" +
+                              Guid.NewGuid().ToString("N").Substring(0, 4) + ".png";
                 string path = System.IO.Path.Combine(folder, name);
                 File.WriteAllBytes(path, png);
 
@@ -348,6 +358,13 @@ namespace ScPad
 
         internal Shot AddExternalFile(string path, bool owned)
         {
+            string leaf = System.IO.Path.GetFileNameWithoutExtension(path);
+            if (!string.IsNullOrEmpty(leaf) &&
+                !leaf.StartsWith("guide-", StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.SetGuideSeen(true);   // 用户已经有真实截图了，之后清空也不再弹引导
+            }
+
             if (string.IsNullOrEmpty(path)) return null;
             if (!IsImageFile(path)) return null;
 
@@ -496,10 +513,142 @@ namespace ScPad
             if (changed) Publish(true);
         }
 
+        /// <summary>
+        /// 图片被外部编辑（「图片编辑」保存后覆盖原文件）时调用：
+        /// 重新解码、换缩略图与哈希，但**保持原来的位置与顺序**。
+        /// </summary>
+        internal Shot Refresh(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+
+            byte[] bytes;
+            try { bytes = File.ReadAllBytes(path); }
+            catch (Exception ex) { Log.Warn("[ScPad] 读取编辑后的图片失败：" + ex.Message); return null; }
+
+            SKBitmap full = null;
+            try { full = SKBitmap.Decode(bytes); }
+            catch (Exception ex) { Log.Warn("[ScPad] 解码编辑后的图片失败：" + ex.Message); }
+
+            if (full == null) return null;
+
+            try
+            {
+                string hash = Hash(bytes, full.Width, full.Height);
+                Shot replaced = null;
+
+                lock (_lock)
+                {
+                    int index = -1;
+                    for (int i = 0; i < _items.Count; i++)
+                    {
+                        if (!string.Equals(_items[i].Path, path, StringComparison.OrdinalIgnoreCase)) continue;
+                        index = i;
+                        break;
+                    }
+                    if (index < 0) return null;
+
+                    Shot old = _items[index];
+                    _hashes.Remove(old.Hash);
+                    replaced = new Shot(old.Path, hash, MakeThumbnail(full), old.Created, old.Tilt, old.Owned);
+                    _items[index] = replaced;
+                    _hashes.Add(hash);
+                }
+
+                Publish(true);
+                return replaced;
+            }
+            finally
+            {
+                try { full.Dispose(); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// 首次安装（还没有任何截图）时，生成 4 张教学图并放进截图夹：
+        /// 从 4 号先加、1 号最后加，于是列表从右往左就是 1→2→3→4，
+        /// 隐含告诉用户"新截图是从右边进来的"。
+        /// 生成一次后写 guideSeen，之后（包括用户把它们全删了）都不会再自动出现。
+        /// </summary>
+        internal int EnsureGuide()
+        {
+            if (_settings.GuideSeen) return 0;
+
+            if (Snapshot.Length > 0)
+            {
+                // 已经有截图 → 这次不打扰，但**不写标记**：
+                // 用户把截图全删光、下次启动时还能看到一次教学图。
+                return 0;
+            }
+
+            int added = PutGuideImages();
+            _settings.SetGuideSeen(true);
+            return added;
+        }
+
+        /// <summary>设置里的「重新查看新手引导」：把 4 张教学图重新放进来。</summary>
+        internal int ShowGuideAgain()
+        {
+            _settings.SetGuideSeen(true);
+            return PutGuideImages();
+        }
+
+        private int PutGuideImages()
+        {
+            int added = 0;
+            try
+            {
+                string folder = System.IO.Path.Combine(_root, "Guide");
+                Directory.CreateDirectory(folder);
+
+                // 4 先入、1 最后入 → SP-1 在最右（第 1 课）
+                for (int i = 4; i >= 1; i--)
+                {
+                    string path = System.IO.Path.Combine(folder, "guide-" + i.ToString() + ".png");
+                    try
+                    {
+                        if (!File.Exists(path) || new FileInfo(path).Length == 0)
+                        {
+                            byte[] png = GuideImages.Render(i);
+                            if (png == null || png.Length == 0) continue;
+                            File.WriteAllBytes(path, png);
+                        }
+
+                        if (ContainsPath(path)) continue;
+                        if (AddExternalFile(path, false) != null) added++;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn("[ScPad] 放入引导图 " + i.ToString() + " 失败：" + ex.Message);
+                    }
+                }
+
+                if (added > 0)
+                {
+                    Log.Info("[ScPad] 已放入 " + added.ToString() + " 张新手引导图：" + folder);
+                    Reminders.Post(_host, "截图夹带你看 4 张图",
+                        "第 1 张教截图、第 2 张教拖图、第 3 张教编辑、第 4 张讲收集模式；看完点图片顶部的小夹子就能删掉。",
+                        null, TimeSpan.FromSeconds(10));
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("[ScPad] 生成新手引导图失败", ex);
+            }
+
+            return added;
+        }
+
         // ---- 移出 ----
 
         internal void Remove(Shot shot)
         {
+            if (shot != null && shot.FileName != null &&
+                shot.FileName.StartsWith("guide-", StringComparison.OrdinalIgnoreCase))
+            {
+                // 用户把教学图删了：记下来，以后（包括清空列表、重启）都不再自动放
+                _settings.SetGuideSeen(true);
+            }
+
             if (shot == null) return;
 
             bool removed = false;

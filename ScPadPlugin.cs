@@ -48,7 +48,7 @@ namespace ScPad
 
         public string DisplayName { get { return "ScPad"; } }
 
-        public string Version { get { return "1.0.0-preview-2"; } }
+        public string Version { get { return "1.0.0"; } }
 
         public string Author { get { return "GAHFTSD"; } }
 
@@ -170,6 +170,24 @@ namespace ScPad
                 Log.Warn("[ScPad] 请求重新布局失败：" + ex.Message);
             }
             WheelRouter.Clear();
+        }
+
+        /// <summary>截图夹里是否已经有那几张新手引导图（guide-1..4）。</summary>
+        private bool HasGuideImages()
+        {
+            try
+            {
+                Shot[] shots = _store == null ? null : _store.Snapshot;
+                if (shots == null) return false;
+
+                for (int i = 0; i < shots.Length; i++)
+                {
+                    if (shots[i].FileName != null && shots[i].FileName.StartsWith("guide-", StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+            }
+            catch { }
+            return false;
         }
 
         /// <summary>快捷键按下：转到采集线程去执行（别在快捷键线程里直接动宿主）。</summary>

@@ -20,7 +20,7 @@
 		<OutputType>Library</OutputType>
 		<AssemblyName>ScPad</AssemblyName>
 		<RootNamespace>ScPad</RootNamespace>
-		<Version>1.0.0-preview-2</Version>
+		<Version>1.0.0</Version>
 		<Authors>GAHFTSD</Authors>
 		<Company>GAHFTSD</Company>
 		<Product>ScPad</Product>

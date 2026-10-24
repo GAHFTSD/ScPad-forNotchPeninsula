@@ -46,6 +46,11 @@ namespace ScPad
 
         private SettingsButtonPoller _buttons;
 
+        // 「图片编辑」跟踪：编辑哪张、编辑前的修改戳、多久后放弃跟踪
+        private string _editPath;
+        private string _editStamp;
+        private long _editDeadlineTicks;
+
         // 设置变更：宿主可能在一次拖动里连发几十个事件，合并成"每 250ms 处理一次"
         private int _settingsDirty;
         private int _settingsApplying;
@@ -56,6 +61,7 @@ namespace ScPad
         private string _appliedFolder;
         private bool _appliedPaused;
         private int _appliedSlots = -1;
+        private bool _appliedPanelActions = true;
         private string _appliedHotkeyA;
         private string _appliedHotkeyB;
 
@@ -123,6 +129,7 @@ namespace ScPad
                     }
 
                     try { CheckPeek(); } catch { }
+                    try { CheckEditResult(); } catch { }
 
                     try { PumpSettingsChanges(); }
                     catch (Exception ex) { Log.Warn("[ScPad] 应用设置变更失败：" + ex.Message); }
@@ -153,7 +160,7 @@ namespace ScPad
 
         private void PollClipboard()
         {
-            if (_store.Paused || !_store.ClipboardEnabled)
+            if (_store.CollectMode != PluginSettings.CollectAuto || !_store.ClipboardEnabled)
             {
                 _lastSequence = ClipboardOps.Sequence();
                 return;
@@ -424,6 +431,174 @@ namespace ScPad
             catch { }
         }
 
+        /// <summary>打开项目仓库的 Issues 页（设置中心里的「反馈问题」按钮）。</summary>
+        internal void RequestOpenIssues()
+        {
+            _jobs.Enqueue(delegate
+            {
+                try
+                {
+                    var info = new System.Diagnostics.ProcessStartInfo("https://github.com/GAHFTSD/ScPad-forNotchPeninsula/issues");
+                    info.UseShellExecute = true;
+                    System.Diagnostics.Process.Start(info);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("[ScPad] 打开 issues 页面失败：" + ex.Message);
+                    Reminders.Post(_host, "反馈问题",
+                        "欢迎在同名 GitHub 仓库（ScPad-forNotchPeninsula）中留下 issues。",
+                        null, TimeSpan.FromSeconds(8));
+                }
+            });
+            _wake.Set();
+        }
+
+        /// <summary>面板底部「更多设置」：宿主没有打开设置中心的 API，只能引导一下。</summary>
+        internal void RequestSettingsHelp()
+        {
+            _jobs.Enqueue(delegate
+            {
+                Hint("点岛上的齿轮 → 选 ScPad，可详细设置");
+                Reminders.Post(_host, "详细设置",
+                    "点灵动岛上的「齿轮」组件 → 左侧列表选 ScPad，就是全部设置项。",
+                    null,
+                    TimeSpan.FromSeconds(7));
+            });
+            _wake.Set();
+        }
+
+        /// <summary>
+        /// 面板底部「图片编辑」：编辑**最近一次复制的那张**（没有就退回最新一张）。
+        /// 打开前记下文件的修改戳，保存回原路径后自动刷新缩略图（位置不变）。
+        /// </summary>
+        internal void RequestEditTarget()
+        {
+            _jobs.Enqueue(delegate { EditTargetNow(); });
+            _wake.Set();
+        }
+
+        private void EditTargetNow()
+        {
+            try
+            {
+                Shot shot = PickEditTarget();
+                if (shot == null)
+                {
+                    Hint("还没有截图可以编辑");
+                    return;
+                }
+
+                string path = shot.Path;
+                if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
+                {
+                    Hint("这张图已经不在磁盘上了");
+                    return;
+                }
+
+                if (_store.Settings.EditorMode == 1)
+                {
+                    // 画图
+                    try
+                    {
+                        var info = new System.Diagnostics.ProcessStartInfo("mspaint.exe", "\"" + path + "\"");
+                        info.UseShellExecute = true;
+                        System.Diagnostics.Process.Start(info);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn("[ScPad] 打开画图失败，退回系统默认：" + ex.Message);
+                        OpenWithShell(path);
+                    }
+                }
+                else
+                {
+                    // 系统默认（通常是「照片」，在里面点编辑即可）
+                    OpenWithShell(path);
+                }
+
+                // 记下修改戳：保存回原路径后，tick 会检测到并原位刷新缩略图
+                _editPath = path;
+                _editStamp = StampOf(path);
+                _editDeadlineTicks = DateTime.UtcNow.Ticks + TimeSpan.TicksPerMinute * 30L;
+
+                Hint("已打开，保存后会覆盖原图");
+                Log.Info("[ScPad] 打开图片编辑：" + path);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("[ScPad] 打开图片编辑失败", ex);
+                Hint("打开图片编辑失败");
+            }
+        }
+
+        /// <summary>自检用：直接问「图片编辑」会选哪张。</summary>
+        internal Shot PickEditTargetForTest()
+        {
+            return PickEditTarget();
+        }
+
+        /// <summary>挑编辑目标：最近一次复制的那张（CopiedTicks 最大），没有就最新一张。</summary>
+        private Shot PickEditTarget()
+        {
+            Shot[] shots = _store.Snapshot;
+            if (shots.Length == 0) return null;
+
+            Shot best = null;
+            long bestTicks = 0;
+            for (int i = 0; i < shots.Length; i++)
+            {
+                long ticks = shots[i].CopiedTicks;
+                if (ticks > bestTicks)
+                {
+                    bestTicks = ticks;
+                    best = shots[i];
+                }
+            }
+
+            return best != null ? best : shots[shots.Length - 1];
+        }
+
+        private static string StampOf(string path)
+        {
+            try
+            {
+                var info = new System.IO.FileInfo(path);
+                if (!info.Exists) return "";
+                return info.LastWriteTimeUtc.Ticks.ToString() + "|" + info.Length.ToString();
+            }
+            catch { return ""; }
+        }
+
+        /// <summary>采集线程 tick：编辑保存回原路径后，原位刷新缩略图。</summary>
+        private void CheckEditResult()
+        {
+            if (_editPath == null) return;
+
+            if (DateTime.UtcNow.Ticks > _editDeadlineTicks)
+            {
+                _editPath = null;
+                return;
+            }
+
+            string stamp = StampOf(_editPath);
+            if (stamp.Length == 0 || string.Equals(stamp, _editStamp, StringComparison.Ordinal)) return;
+
+            _editStamp = stamp;
+            Shot refreshed = _store.Refresh(_editPath);
+            if (refreshed != null)
+            {
+                Hint("已更新编辑后的图片");
+                Log.Info("[ScPad] 编辑后的图片已原位刷新：" + refreshed.Path);
+            }
+        }
+
+        private static void OpenWithShell(string path)
+        {
+            var info = new System.Diagnostics.ProcessStartInfo(path);
+            info.UseShellExecute = true;
+            System.Diagnostics.Process.Start(info);
+        }
+
         /// <summary>从剪贴板上传一张（面板里点空槽 / 设置中心的按钮）。</summary>
         internal void RequestPasteFromClipboard()
         {
@@ -486,6 +661,12 @@ namespace ScPad
                     break;
 
                 default:
+                    if (settings.CollectMode != PluginSettings.CollectAuto)
+                    {
+                        Hint(settings.CollectMode == PluginSettings.CollectOff ? "收集已关闭" : "手动收集下请用拖入加图");
+                        return;
+                    }
+
                     ScreenCaptureNow();
                     break;
             }
@@ -493,6 +674,12 @@ namespace ScPad
 
         internal void RequestImport(IEnumerable<string> paths)
         {
+            if (_store.CollectMode == PluginSettings.CollectOff)
+            {
+                Hint("收集已关闭");
+                return;
+            }
+
             if (paths == null) return;
             var list = new List<string>(paths);
             if (list.Count == 0) return;
@@ -716,7 +903,7 @@ namespace ScPad
         private void ResetAll()
         {
             PluginSettings settings = _store.Settings;
-            settings.Paused = false;
+            settings.SetCollectMode(PluginSettings.CollectAuto);
             settings.AutoPeek = true;
             settings.SetMaxItems(PluginSettings.DefaultShots);
             settings.SetThumbScale(0);

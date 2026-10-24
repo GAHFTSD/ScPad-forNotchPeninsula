@@ -4,11 +4,15 @@
 | --- | --- |
 | <img src="docs/widget-dark.png" width="380"> | <img src="docs/widget-empty-dark.png" width="290"> |
 
-| 截图夹面板 | 复制成功的反馈 |
+| 截图夹面板（v1.0.0 紧凑版） | 复制成功的反馈 |
 | --- | --- |
 | <img src="docs/panel-dark.png" width="560"> | <img src="docs/panel-dark-copied.png" width="560"> |
 
-| 空面板（预留 4 格，点 + 从剪贴板上传） | 多图时点两端箭头翻页 |
+| 鼠标移到夹子上→变红色取下按钮 | 多图时点两端箭头翻页 |
+| --- | --- |
+| <img src="docs/panel-dark-remove.png" width="560"> | <img src="docs/panel-crowded-dark.png" width="560"> |
+
+| 空面板（预留 4 格，点 + 上传） | 多图时点两端箭头翻页 |
 | --- | --- |
 | <img src="docs/panel-empty-dark.png" width="560"> | <img src="docs/panel-crowded-dark.png" width="560"> |
 
@@ -36,10 +40,11 @@
 操作                        结果
 单击卡片                    复制这张图：PNG + 位图 + 文件路径一起进剪贴板
 按住卡片拖到别的应用        直接拖出 PNG，Word / PPT / 微信 / QQ / 浏览器 / PS 可接收
-卡片右上角 ×                移出这张；自己收的进 Recycle，外部原图不动
+卡片底部正中 ↓ 按钮          把这张从夹子上取下；自己收的进 Recycle，外部原图不动
 把文件拖进面板              收进截图夹；点空槽的 + 可从剪贴板上传
 岛内右键                    收起面板；面板无按钮栏、无标题提示文字
 点两端 ‹ ›                    超过预留格数时翻页（本版不接管滚轮）
+面板顶部 3 格（对称）         更多设置 / 收集状态（自动·绿 / 手动·蓝 / 关闭·红，点它循环）/ 图片编辑（设置里可关）
 
 ⚙ 设置（官方「插件设置中心」）
 
@@ -52,9 +57,13 @@
             缩略图大小 %                   25~200；不动则跟随上限
             新截图自动展开面板             默认开
             收集剪贴板里的图片             默认开
-            暂停收集                       临时不收新截图
+            收集模式                       自动（全收）/ 手动（只认拖入）/ 关闭（全不收）；点面板顶部状态块也能切
             面板预留格数                   1~8，默认 4；空槽也占位
             抓屏时先藏起灵动岛             默认开；抓前淡出约 80ms
+            面板顶部状态区                 默认开；关掉后整行消失、面板更矮
+            重新查看新手引导             按钮：再往截图夹里放一次 4 张教学图
+            反馈问题（GitHub Issues）      按钮：打开仓库 Issues 页
+            「图片编辑」用哪个应用         照片（系统默认）/ 画图；编辑对象 = 最近复制的那张，保存后覆盖原图
 保存位置    保存位置（文本）               留空 = %USERPROFILE%\Pictures\Screenshots
             选择文件夹…                     系统文件夹选择框（选完立即生效）
 快捷键      快捷键 1 / 2（按钮）            按钮上写着当前组合，点一下即可录制；Esc 取消、Backspace 清除
@@ -79,7 +88,7 @@
 🗂 数据与设置
 
 内容                        位置
-图片本身（可配置）          默认 %USERPROFILE%\Pictures\Screenshots；自己抓的图命名 ScPad-yyyyMMdd-HHmmss-fff-xxxxxx.png
+图片本身（可配置）          默认 %USERPROFILE%\Pictures\Screenshots；自己抓的图命名 SP-yyMMdd-HHmmss-xxxx.png（面板里显示 SP-X）
 列表状态 / 回收站           %LocalAppData%\NotchPeninsula\ScPad\（state.txt、Recycle\）
 开关 / 路径 / 快捷键        HKCU\SOFTWARE\NotchPeninsula\Plugin.com.gahftsd.scpad.*
 日志                        %LocalAppData%\NotchPeninsula\app.log（统一前缀 [ScPad]）
@@ -94,7 +103,7 @@
 
 方式一：直接下载
 
-到 Releases 下载 ScPad-v1.0.0-preview-2.zip，解压出 ScPad/ 文件夹，整个丢进灵动岛插件目录：
+到 Releases 下载 ScPad-v1.0.0.zip，解压出 ScPad/ 文件夹，整个丢进灵动岛插件目录：
 <灵动岛目录>\plugins\ScPad\ScPad.dll
 <灵动岛目录>\plugins\ScPad\plugin.json
 
@@ -145,7 +154,7 @@ build\PluginApiStub.cs 里的声明必须和真宿主签名逐字一致；宿主
 自检（不需要装进灵动岛）：
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build\run-selftest.ps1
 
-用假宿主把插件跑起来，97 项检查：组件宽度、面板尺寸、卡片滚动、保存位置默认值与改目录后新图落盘、自动展开默认开启、设置中心控件形态/推荐百分比/按钮轮询/运行时生成控件、常驻状态栏宽度、滚轮惯性与边界、设置变更不自激、预留格数/右到左填充/拖动排序/剪贴板上传/弹簧收敛、快捷键默认值与系统注册、清除/录制/动作切换、剪贴板采集、整屏抓图、单击复制、按住拖出、× 移出并进回收、暂停、重启后恢复列表与设置；顺带把预览图渲染到 build\preview\。
+用假宿主把插件跑起来，122 项检查：组件宽度、面板尺寸、卡片滚动、保存位置默认值与改目录后新图落盘、自动展开默认开启、设置中心控件形态/推荐百分比/按钮轮询/运行时生成控件、常驻状态栏宽度、滚轮惯性与边界、设置变更不自激、预留格数/右到左填充/拖动排序/剪贴板上传/弹簧收敛、快捷键默认值与系统注册、清除/录制/动作切换、剪贴板采集、整屏抓图、单击复制、按住拖出、× 移出并进回收、暂停、重启后恢复列表与设置；顺带把预览图渲染到 build\preview\。
 
 和真宿主的接口对账：
 build\metadump\MetaDump.cs 用 System.Reflection.Metadata 比对元数据，不加载程序集。
@@ -165,7 +174,7 @@ ReminderData 的 init 属性带 modreq(IsExternalInit)，C# 5 编译器写不出
 - 快捷键自带消息循环：RegisterHotKey(IntPtr.Zero, ...) 在 hWnd 为 NULL 时把 WM_HOTKEY 投递到调用线程消息队列，一条线程 + PeekMessage 就够。录制时先注销所有热键，再用 GetAsyncKeyState 轮询下一个按下的非修饰键，用 GetKeyNameText 翻名字。
 - 不可变快照：渲染线程只读 ShotStore.Snapshot；每次变更整体换新数组，老位图不显式 Dispose，交给终结器，不存在 use-after-free。
 - 字体现取现用、画笔临时创建：不缓存 SKTypeface，每帧 new SKPaint 用完 using 释放；颜色从 frame.Theme.TextColor 派生。订阅 FontConfig.Changed 后调 host.InvalidateWidgetLayout() 重测宽度。
-- 面板只有一个尺寸：MeasureWidth/Height 只在展开时算一次，内容垂直居中；卡片数量变化时才重算，避免拖放中面板变形。卡片带单行，一屏最多 4 张，多的点两端箭头翻页。
+- 面板只有一个尺寸：MeasureWidth/Height 只在展开时算一次，内容垂直居中；卡片数量/设置区开关变化时才重算。卡片 140×132、图片 cover 铺满，底部一行是「名称 · 取下按钮 · 时间」。
 - 拖出用宿主 StartFileDrag：详情页没有自己的窗口，必须由宿主代为发起。OnMouseMove 按 4px 阈值触发；拖放期间 OnMouseUp 不会来，正在拖动在 finally 复位。
 - 抓屏时藏岛体：NotchWindow.InstanceHandle 是宿主公开的岛体句柄，抓图前 SetWindowPos(...SWP_HIDEWINDOW)，抓完 finally 里 SWP_SHOWWINDOW；拿不到句柄时照常抓。
 
@@ -180,7 +189,7 @@ WPF 设置窗口（四页）              设置注入官方插件设置中心�
 拖出携带“图片 + PNG + FileDrop”   拖出携带 PNG 文件路径；图片形态用单击复制
 更新检查、开机启动、透明度/主题   不做，宿主统一管外观与更新
 数据在 %LOCALAPPDATA%\Snapline    数据在 %LOCALAPPDATA%\NotchPeninsula\ScPad，完全不共享
-12 张、判重、暂停收集、文件夹监听 保留
+12 张、判重、收集开关、文件夹监听 保留
 
 🩺 排错
 
@@ -216,6 +225,6 @@ B站：https://space.bilibili.com/104341778
 GitHub：https://github.com/GAHFTSD
 许可：MIT
 
-最后更新：ScPad 1.0.0-preview-2（预发布）
+最后更新：ScPad 1.0.0（正式版）
 
 内容部分由 AI 生成

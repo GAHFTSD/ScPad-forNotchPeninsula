@@ -245,6 +245,10 @@ namespace ScPad
         private const string KeyThumbScale = "thumbScale";
         private const string KeyPanelSlots = "panelSlots";
         private const string KeyHideOnCapture = "hideOnCapture";
+        private const string KeyCollectMode = "collectMode";
+        private const string KeyGuideSeen = "introSeen2";
+        private const string KeyPanelActions = "panelActions";
+        private const string KeyEditorMode = "editorMode";
         private const string KeyHotkeyAView = "hotkeyAView";
         private const string KeyHotkeyBView = "hotkeyBView";
 
@@ -277,6 +281,10 @@ namespace ScPad
         private int _thumbScale;
         private int _panelSlots;
         private bool _hideOnCapture;
+        private int _collectMode;
+        private bool _guideSeen;
+        private bool _panelActions;
+        private int _editorMode;
 
         internal PluginSettings(IPluginHost host)
         {
@@ -286,6 +294,8 @@ namespace ScPad
             _saveFolder = string.IsNullOrEmpty(folder) ? ShotStore.SystemScreenshotsFolder() : folder;
 
             _paused = Read(KeyPaused, "0") == "1";
+            _collectMode = ClampCollectMode((int)ReadNumber(KeyCollectMode, _paused ? CollectOff : CollectAuto));
+            _guideSeen = Read(KeyGuideSeen, "0") == "1";   // 新版键名：老用户也会重新看到一次教学图
             _clipboard = Read(KeyClipboard, "1") != "0";
             _autoPeek = Read(KeyAutoPeek, "1") != "0";   // 默认开启：新截图到手自动展开面板（可在设置页关掉）
 
@@ -302,6 +312,8 @@ namespace ScPad
             _thumbScale = ClampScale((int)ReadNumber(KeyThumbScale, 0));   // 0 = 还没设过 → 用推荐值
             _panelSlots = ClampSlots((int)ReadNumber(KeyPanelSlots, DefaultSlots));
             _hideOnCapture = Read(KeyHideOnCapture, "1") != "0";   // 默认开：连续截图时藏一下岛
+            _panelActions = Read(KeyPanelActions, "1") != "0";     // 面板底部设置区（默认开）
+            _editorMode = (int)ReadNumber(KeyEditorMode, 0);        // 0 = 照片（系统默认）, 1 = 画图
 
             SanitizeHotkeys();
         }
@@ -370,6 +382,8 @@ namespace ScPad
                 _thumbScale = ClampScale((int)ReadNumber(KeyThumbScale, 0));
                 _panelSlots = ClampSlots((int)ReadNumber(KeyPanelSlots, DefaultSlots));
                 _hideOnCapture = Read(KeyHideOnCapture, "1") != "0";
+                _panelActions = Read(KeyPanelActions, "1") != "0";
+                _editorMode = (int)ReadNumber(KeyEditorMode, 0);
             }
         }
 
@@ -445,6 +459,68 @@ namespace ScPad
         {
             lock (_lock) _hideOnCapture = value;
             Write(KeyHideOnCapture, value ? "1" : "0");
+        }
+
+        /// <summary>收集模式：0 = 自动，1 = 手动（只收显式操作），2 = 关闭。</summary>
+        internal const int CollectAuto = 0;
+        internal const int CollectManual = 1;
+        internal const int CollectOff = 2;
+
+        internal int CollectMode { get { lock (_lock) return _collectMode; } }
+
+        internal void SetCollectMode(int mode)
+        {
+            mode = ClampCollectMode(mode);
+            lock (_lock)
+            {
+                _collectMode = mode;
+                _paused = mode == CollectOff;   // 兼容旧的 paused 语义
+            }
+            Write(KeyCollectMode, mode.ToString());
+            Write(KeyPaused, mode == CollectOff ? "1" : "0");
+        }
+
+        internal static int ClampCollectMode(int mode)
+        {
+            if (mode < CollectAuto) return CollectAuto;
+            if (mode > CollectOff) return CollectOff;
+            return mode;
+        }
+
+        internal static string CollectModeText(int mode)
+        {
+            if (mode == CollectManual) return "手动收集";
+            if (mode == CollectOff) return "关闭收集";
+            return "自动收集";
+        }
+
+        /// <summary>新手引导是否已经看过（首次安装后显示一次）。</summary>
+        internal bool GuideSeen { get { lock (_lock) return _guideSeen; } }
+
+        internal void SetGuideSeen(bool value)
+        {
+            lock (_lock) _guideSeen = value;
+            Write(KeyGuideSeen, value ? "1" : "0");
+        }
+
+        /// <summary>面板底部是否显示设置区（更多设置 / 停止收集 / 图片编辑）。</summary>
+        internal bool PanelActions { get { lock (_lock) return _panelActions; } }
+
+        internal void SetPanelActions(bool value)
+        {
+            lock (_lock) _panelActions = value;
+            Write(KeyPanelActions, value ? "1" : "0");
+        }
+
+        /// <summary>「图片编辑」用哪个应用：0 = 照片（系统默认），1 = 画图。</summary>
+        internal int EditorMode { get { lock (_lock) return _editorMode; } }
+
+        internal void SetEditorMode(int value)
+        {
+            if (value < 0) value = 0;
+            if (value > 1) value = 1;
+            lock (_lock) _editorMode = value;
+            Write(KeyEditorMode, value.ToString());
         }
 
         internal static int ClampSlots(int value)
