@@ -1,25 +1,35 @@
-# ScPad · 截屏图片存取（NotchPeninsula 插件）
+﻿# ScPad · 截屏图片存取（NotchPeninsula 插件）
 
 本项目是面向 NotchPeninsula 的截屏图片存取插件，交互与产品取舍参考 jiuyang5354 的 snapline-windows 与 Alejandro Buján 的 Tendedero，但面向 NotchPeninsula 插件 API 独立实现，不含、也不再分发参考项目的源代码、图标或图片资源。
 
 作者：GAHFTSD
 许可：MIT
-版本：1.0.0-preview-2（预发布）
+版本：1.0.0（正式版）
 插件标识：com.gahftsd.scpad
 
 🖼 演示
 
 以下都是自检台用假宿主渲染出来的真实画面，不是设计稿。
 
-- 岛上（有图）：docs/widget-dark.png（宽 380）
-- 岛上（没图也常驻）：docs/widget-empty-dark.png（宽 290）
-- 截图夹面板（v1.0.0 紧凑版）：docs/panel-dark.png（宽 560）
-- 复制成功的反馈：docs/panel-dark-copied.png（宽 560）
-- 鼠标移到夹子上 → 变红色取下按钮：docs/panel-dark-remove.png（宽 560）
-- 多图时点两端箭头翻页：docs/panel-crowded-dark.png（宽 560）
-- 空面板（预留 4 格，点 + 上传）：docs/panel-empty-dark.png（宽 560）
-- 把文件拖进面板：docs/panel-dark-drop.png（宽 560）
-- 亮色主题：docs/panel-light.png（宽 560）
+| 岛上（有图） | 岛上（没图也常驻） |
+| --- | --- |
+| <img src="docs/widget-dark.png" width="380"> | <img src="docs/widget-empty-dark.png" width="290"> |
+
+| 截图夹面板（v1.0.0 紧凑版） | 复制成功的反馈 |
+| --- | --- |
+| <img src="docs/panel-dark.png" width="560"> | <img src="docs/panel-dark-copied.png" width="560"> |
+
+| 鼠标移到夹子上 → 变红色取下按钮 | 多图时点两端箭头翻页 |
+| --- | --- |
+| <img src="docs/panel-dark-remove.png" width="560"> | <img src="docs/panel-crowded-dark.png" width="560"> |
+
+| 空面板（预留 4 格，点 + 上传） | 把文件拖进面板 |
+| --- | --- |
+| <img src="docs/panel-empty-dark.png" width="560"> | <img src="docs/panel-dark-drop.png" width="560"> |
+
+亮色主题：
+
+<img src="docs/panel-light.png" width="560">
 
 📌 项目出发点
 
@@ -41,7 +51,7 @@ ScPad 做的事情很具体：把截图收进来、挂在灵动岛上、点一�
 - 截图夹面板：IDetailPage，单行卡片带、预留格、两端翻页、单击复制、按住拖出、↓ 取下。
 - 设置中心：ISettingsPage 注入官方插件设置中心 NpsSettingsHub，无独立设置窗口。
 - 构建发布：.NET SDK 构建或离线 csc 编译，产物 ScPad.dll + plugin.json。
-- 自检与对账：PowerShell 自检台 97 项检查；MetaDump 比对宿主插件接口签名。
+- 自检与对账：PowerShell 自检台 122 项检查；MetaDump 比对宿主插件接口签名。
 
 🧰 技术栈
 
@@ -57,7 +67,7 @@ ScPad 做的事情很具体：把截图收进来、挂在灵动岛上、点一�
 
 1. 下载与解压
 
-从 Releases 下载 ScPad-v1.0.0-preview-2.zip，解压得到 ScPad 文件夹。
+从 Releases 下载 ScPad-v1.0.0.zip，解压得到 ScPad 文件夹。
 
 2. 放入插件目录
 
@@ -68,10 +78,8 @@ ScPad 做的事情很具体：把截图收进来、挂在灵动岛上、点一�
     ScPad.dll
     plugin.json
     使用说明.md
-    LICENSE
-    THIRD-PARTY-NOTICES.txt
 
-目录名不要改。
+目录名不要改。包内只有这 3 个文件：MIT 许可全文与第三方署名在使用说明.md 的附录 A / 附录 B 里（仓库里另存 LICENSE、THIRD-PARTY-NOTICES.txt）。
 
 3. 启用插件
 
@@ -128,7 +136,7 @@ ScPad 会把它当普通图片目录监听，不复制、不移动。
 
 - 单击卡片：复制这张图，PNG + 位图 + 文件路径一起进剪贴板。
 - 按住卡片拖到别的应用：直接拖出 PNG，Word / PPT / 微信 / QQ / 浏览器 / PS 可接收。
-- 卡片底部正中 ↓ 按钮：把这张从夹子上取下；自己收的进 Recycle，外部原图不动。
+- 卡片顶部正中就是夹子：鼠标移上去 → 变红色「取下」按钮（↓ 蓄力下坠）；自己收的进 Recycle，外部原图不动。
 - 把文件拖进面板：收进截图夹；点空槽的 + 可从剪贴板上传。
 - 岛内右键：收起面板；面板无按钮栏、无标题提示文字。
 - 点两端 ‹ ›：超过预留格数时翻页（本版不接管滚轮）。
@@ -159,10 +167,13 @@ ScPad 会把它当普通图片目录监听，不复制、不移动。
 保存位置分组：
 
 - 保存位置（文本）：留空 = 系统默认截图位置 %USERPROFILE%\Pictures\Screenshots；按当前 Windows 用户解析，改过位置会跟随。
-- 选择文件夹…：系统文件夹选择框。
-- 打开：资源管理器。
-- 录制：点「录制」后直接按组合键；Esc 取消、Backspace 清除；PrtSc 单独按下是系统截图键，插件不占用。
-- 动作（选择）：截图并存入 / 展开·收起 / 复制最近一张。
+- 选择文件夹…：系统文件夹选择框，选完立即生效。
+
+快捷键分组：
+
+- 快捷键 1 / 2：按钮上直接显示当前组合，点一下进入录制；Esc 取消、Backspace 清除；PrtSc 单独按下是系统截图键，插件不占用。
+- 快捷键 1 / 2 动作（选择）：截图并存入 / 展开·收起 / 复制最近一张。
+
 
 其它分组：
 
@@ -190,16 +201,16 @@ ScPad 会把它当普通图片目录监听，不复制、不移动。
 - 手动：只认拖入/手动上传，不自动收剪贴板与目录新图。
 - 关闭：全不收。
 
-同一张图按像素内容 SHA-256 判重，不会重复挂两次；收集侧最多保留最近 12 张，列表上限由设置决定。
+同一张图按像素内容 SHA-256 判重，不会重复挂两次；列表上限由设置决定（默认 10 张，可设 4~100），超出时最老的移出。
 
 🗂 数据与设置
 
-- 图片本身（可配置）：默认 %USERPROFILE%\Pictures\Screenshots；自己抓的图命名 ScPad-yyyyMMdd-HHmmss-fff-xxxxxx.png。
+- 图片本身（可配置）：默认 %USERPROFILE%\Pictures\Screenshots；自己抓的图命名 SP-yyMMdd-HHmmss-xxxx.png（面板里显示 SP-1、SP-2…）。
 - 列表状态 / 回收站：%LocalAppData%\NotchPeninsula\ScPad\（state.txt、Recycle\）。
 - 开关 / 路径 / 快捷键：HKCU\SOFTWARE\NotchPeninsula\Plugin.com.gahftsd.scpad.*。
 - 日志：%LocalAppData%\NotchPeninsula\app.log（统一前缀 [ScPad]）。
 
-设置键包括：saveFolder、paused、clipboard、autoPeek、maxShots（4~100，默认 10）、thumbAuto / thumbScale（25~200；0 表示没设过 → 用推荐值）、collectMode、topStatus、hotkeyA / hotkeyAAction、hotkeyB / hotkeyBAction、hotkeyAView / hotkeyBView（只读展示用）。
+设置键包括：saveFolder、clipboard、autoPeek、maxShots（4~100，默认 10）、panelSlots（1~8，默认 4）、thumbScale（25~200；0 = 跟随上限）、collectMode（自动/手动/关闭）、hideOnCapture、panelActions、editorMode、guideSeen、hotkeyA / hotkeyAAction、hotkeyB / hotkeyBAction。
 快捷键存成 修饰键:虚拟键码，例如 2:44 = Ctrl + PrtSc。
 想换插件自己的数据目录（便携 / 多开调试）：设环境变量 SCPAD_DATA 指向目标文件夹；只影响 state.txt 与 Recycle，不影响图片保存位置。
 
@@ -209,7 +220,7 @@ ScPad 会把它当普通图片目录监听，不复制、不移动。
 
 方式一：直接下载（只想用插件的人）
 
-到 Releases 下载 ScPad-v1.0.0-preview-2.zip，解压出 ScPad/ 文件夹，整个丢进灵动岛插件目录：
+到 Releases 下载 ScPad-v1.0.0.zip，解压出 ScPad/ 文件夹，整个丢进灵动岛插件目录：
 
 <灵动岛目录>\plugins\ScPad\ScPad.dll
 <灵动岛目录>\plugins\ScPad\plugin.json
@@ -268,7 +279,7 @@ build\PluginApiStub.cs 里的每个声明都必须和真宿主签名逐字一致
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build\run-selftest.ps1
 
-用假宿主把插件真的跑起来，97 项检查：组件宽度 / 面板尺寸 / 卡片翻页与滚动边界、保存位置默认值与改目录后新图真的落进新目录、默认保存位置确实按当前用户解析、自动展开默认开启、设置中心的控件形态 / 推荐百分比 / 按钮轮询 / 运行时生成的控件、常驻状态栏宽度、设置变更不自激、预留格数 / 右到左填充 / 拖动排序 / 剪贴板上传 / 弹簧收敛、快捷键默认值与真·系统注册（被别的进程占用时按 1409 跳过）、清除 / 录制 / 动作切换、剪贴板采集、整屏抓图（含“抓完进剪贴板”）、单击复制、按住拖出、↓ 移出并进回收、暂停、重启后恢复列表与设置；顺带把预览图渲染到 build\preview\。
+用假宿主把插件真的跑起来，122 项检查：组件宽度 / 面板尺寸 / 卡片翻页与滚动边界、保存位置默认值与改目录后新图真的落进新目录、默认保存位置确实按当前用户解析、自动展开默认开启、设置中心的控件形态 / 推荐百分比 / 按钮轮询 / 运行时生成的控件、常驻状态栏宽度、设置变更不自激、预留格数 / 右到左填充 / 拖动排序 / 剪贴板上传 / 弹簧收敛、快捷键默认值与真·系统注册（被别的进程占用时按 1409 跳过）、清除 / 录制 / 动作切换、剪贴板采集、整屏抓图（含“抓完进剪贴板”）、单击复制、按住拖出、↓ 移出并进回收、暂停、重启后恢复列表与设置；顺带把预览图渲染到 build\preview\。
 
 和真宿主的接口对账：
 
@@ -360,6 +371,6 @@ ScPad 以 MIT 许可发布，全文见 LICENSE。
 - GitHub：https://github.com/GAHFTSD
 - 许可：MIT
 
-最后更新：ScPad 1.0.0-preview-2（预发布）
+最后更新：ScPad 1.0.0（正式版）
 
 内容部分由 AI 生成
