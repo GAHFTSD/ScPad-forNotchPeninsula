@@ -1,40 +1,34 @@
-﻿using System;
+using System;
 using System.Drawing;
 using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
 using System.Threading;
-using NotchPeninsula;
 
 namespace ScPad
 {
     /// <summary>
     /// 整屏截图。
     ///
-    /// 一个细节：灵动岛自己是置顶的层窗口，直接拷屏会把岛体也拍进去。所以抓之前用
-    /// NotchWindow.InstanceHandle 把岛体藏起来 ~140ms（给合成器一帧时间），抓完立刻恢复。
-    /// 恢复放在 finally 里；拿不到句柄 / 宿主没这个成员时照常抓（最多画面里多个岛体）。
+    /// 「先藏岛」不再用 SetWindowPos(SWPHIDEWINDOW) 直接“啪”一下抹掉，而是走宿主的
+    /// 显示/隐藏灵动岛入口（和「自动隐藏」共用同一条退场动画）：先把岛收到屏幕顶端，
+    /// 再抓屏；抓完再走同一条动画回来。
+    ///
+    /// 宿主入口完全走反射（见 HostIsland）：不同 2.2.0 构建里成员名/可见性并不稳定，
+    /// 拿不到就按原样抓屏 —— **任何情况下都不能因为藏岛失败而丢掉截图**。
     /// </summary>
     internal static class ScreenCapture
     {
-        private const uint SwpNoSize = 0x0001;
-        private const uint SwpNoMove = 0x0002;
-        private const uint SwpNoZOrder = 0x0004;
-        private const uint SwpNoActivate = 0x0010;
-        private const uint SwpShowWindow = 0x0040;
-        private const uint SwpHideWindow = 0x0080;
-
-        private const uint Flags = SwpNoSize | SwpNoMove | SwpNoZOrder | SwpNoActivate;
+        /// <summary>等退场动画走完的时间（宿主弹簧约 0.45 秒）。</summary>
+        private const int HideWaitMs = 520;
 
         /// <summary>
         /// 抓所有显示器组成的整块桌面，返回 PNG 字节。失败时 error 里有原因。
-        ///
-        /// hideIsland = 抓之前把灵动岛藏起来（设置里可关）。
-        /// setDim 是"让插件自己的组件先淡出/再淡入"的钩子 —— 宿主只提供瞬间的
-        /// SWP_HIDEWINDOW，整岛没法渐隐，所以我们至少让自己那块先淡掉，看起来不那么"啪一下没"。
+        /// hideIsland = 抓之前让灵动岛走隐藏动画收起（设置项，默认关）。
         /// </summary>
-        internal static byte[] CaptureAllScreens(bool hideIsland, Action<float> setDim, out string error)
+        internal static byte[] CaptureAllScreens(bool hideIsland, out string error)
         {
             error = null;
+
+            bool hid = false;
 
             try
             {
@@ -45,43 +39,29 @@ namespace ScPad
                     return null;
                 }
 
-                IntPtr island = IntPtr.Zero;
-                bool hidden = false;
-
-                try
+                if (hideIsland)
                 {
-                    try { island = NotchWindow.InstanceHandle; }
-                    catch (Exception ex) { Log.Warn("[ScPad] 取不到岛体句柄（照常抓屏）：" + ex.Message); }
-
-                    if (hideIsland && island != IntPtr.Zero && IsWindowVisible(island))
+                    try
                     {
-                        // 先让我们自己的组件淡出（~80ms，渲染线程每帧读这个值）
-                        if (setDim != null) setDim(1f);
-                        Thread.Sleep(80);
-
-                        hidden = SetWindowPos(island, IntPtr.Zero, 0, 0, 0, 0, Flags | SwpHideWindow);
-                        if (hidden) Thread.Sleep(90);
+                        hid = HostIsland.Hide();
+                        // 走动画收起要给宿主时间；本来就藏着就只等一帧。
+                        Thread.Sleep(hid ? HideWaitMs : 80);
                     }
-
-                    using (var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb))
+                    catch (Exception ex)
                     {
-                        using (var graphics = Graphics.FromImage(bitmap))
-                        {
-                            graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size,
-                                CopyPixelOperation.SourceCopy);
-                        }
-                        return ClipboardOps.EncodePng(bitmap);
+                        Log.Warn("[ScPad] 藏岛失败，按原样抓屏：" + ex.Message);
+                        hid = false;
                     }
                 }
-                finally
-                {
-                    if (setDim != null) setDim(0f);   // 让组件淡回来
 
-                    if (hidden)
+                using (var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb))
+                {
+                    using (var graphics = Graphics.FromImage(bitmap))
                     {
-                        if (!SetWindowPos(island, IntPtr.Zero, 0, 0, 0, 0, Flags | SwpShowWindow))
-                            Log.Error("[ScPad] 抓屏后恢复岛体失败，请重启灵动岛", null);
+                        graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size,
+                            CopyPixelOperation.SourceCopy);
                     }
+                    return ClipboardOps.EncodePng(bitmap);
                 }
             }
             catch (Exception ex)
@@ -90,12 +70,14 @@ namespace ScPad
                 Log.Warn("[ScPad] 抓屏失败：" + ex.Message);
                 return null;
             }
+            finally
+            {
+                if (hid)
+                {
+                    try { HostIsland.Restore(); }
+                    catch (Exception ex) { Log.Warn("[ScPad] 抓屏后唤回灵动岛失败：" + ex.Message); }
+                }
+            }
         }
-
-        [DllImport("user32.dll", SetLastError = true)]
-        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int width, int height, uint flags);
-
-        [DllImport("user32.dll")]
-        private static extern bool IsWindowVisible(IntPtr hWnd);
     }
 }

@@ -245,6 +245,11 @@ namespace ScPad
         private const string KeyThumbScale = "thumbScale";
         private const string KeyPanelSlots = "panelSlots";
         private const string KeyHideOnCapture = "hideOnCapture";
+        private const string KeyCaptureDelay = "captureDelay";   // 旧键：秒（仅迁移用）
+        private const string KeyDelayMode = "delayMode";         // 0 = 动画挡, 1 = 延迟挡
+        private const string KeyDelayFast = "delayFast";         // ×0.1 秒, 1~5
+        private const string KeyDelaySlow = "delaySlow";         // ×0.1 秒, 10~30
+        private const string KeyLiveShot = "liveShot";
         private const string KeyCollectMode = "collectMode";
         private const string KeyGuideSeen = "introSeen2";
         private const string KeyPanelActions = "panelActions";
@@ -281,6 +286,11 @@ namespace ScPad
         private int _thumbScale;
         private int _panelSlots;
         private bool _hideOnCapture;
+        private int _captureDelay;
+        private int _delayMode;
+        private int _delayFast;
+        private int _delaySlow;
+        private bool _liveShot;
         private int _collectMode;
         private bool _guideSeen;
         private bool _panelActions;
@@ -311,7 +321,23 @@ namespace ScPad
             _maxItems = ClampShots((int)ReadNumber(KeyMaxItems, DefaultShots));
             _thumbScale = ClampScale((int)ReadNumber(KeyThumbScale, 0));   // 0 = 还没设过 → 用推荐值
             _panelSlots = ClampSlots((int)ReadNumber(KeyPanelSlots, DefaultSlots));
-            _hideOnCapture = Read(KeyHideOnCapture, "1") != "0";   // 默认开：连续截图时藏一下岛
+            _hideOnCapture = Read(KeyHideOnCapture, "0") == "1";   // 默认关：不再默认藏岛
+            // 两挡：动画挡（0.1~0.5s，默认 0.2s）/ 延迟挡（1~3s，默认 1.5s）
+            _delayFast = ClampFast((int)ReadNumber(KeyDelayFast, DefaultDelayFastX10));
+            _delaySlow = ClampSlow((int)ReadNumber(KeyDelaySlow, DefaultDelaySlowX10));
+            string legacyDelay = Read(KeyCaptureDelay, "");
+            int legacyMode = legacyDelay.Length > 0 ? 1 : 0;   // 老版本用过「截屏延迟（秒）」→ 直接进延迟挡
+            if (legacyDelay.Length > 0)
+            {
+                int legacySeconds;
+                if (int.TryParse(legacyDelay, out legacySeconds))
+                    _delaySlow = ClampSlow(legacySeconds * 10);
+            }
+            _delayMode = (int)ReadNumber(KeyDelayMode, legacyMode);
+            if (_delayMode < 0) _delayMode = 0;
+            if (_delayMode > 1) _delayMode = 1;
+            _captureDelay = _delayMode == 0 ? _delayFast : _delaySlow;   // 兼容旧字段（秒×10）
+            _liveShot = Read(KeyLiveShot, "1") != "0";   // 默认用实况窗倒计时
             _panelActions = Read(KeyPanelActions, "1") != "0";     // 面板底部设置区（默认开）
             _editorMode = (int)ReadNumber(KeyEditorMode, 0);        // 0 = 照片（系统默认）, 1 = 画图
 
@@ -381,7 +407,24 @@ namespace ScPad
                 _maxItems = ClampShots((int)ReadNumber(KeyMaxItems, DefaultShots));
                 _thumbScale = ClampScale((int)ReadNumber(KeyThumbScale, 0));
                 _panelSlots = ClampSlots((int)ReadNumber(KeyPanelSlots, DefaultSlots));
-                _hideOnCapture = Read(KeyHideOnCapture, "1") != "0";
+                _hideOnCapture = Read(KeyHideOnCapture, "0") == "1";
+                // 两挡：动画挡（0.1~0.5s，默认 0.2s）/ 延迟挡（1~3s，默认 1.5s）
+            _delayFast = ClampFast((int)ReadNumber(KeyDelayFast, DefaultDelayFastX10));
+            _delaySlow = ClampSlow((int)ReadNumber(KeyDelaySlow, DefaultDelaySlowX10));
+            string legacyDelay = Read(KeyCaptureDelay, "");
+            int legacyMode = legacyDelay.Length > 0 ? 1 : 0;   // 老版本用过「截屏延迟（秒）」→ 直接进延迟挡
+            if (legacyDelay.Length > 0)
+            {
+                int legacySeconds;
+                if (int.TryParse(legacyDelay, out legacySeconds))
+                    _delaySlow = ClampSlow(legacySeconds * 10);
+            }
+            _delayMode = (int)ReadNumber(KeyDelayMode, legacyMode);
+            if (_delayMode < 0) _delayMode = 0;
+            if (_delayMode > 1) _delayMode = 1;
+            _captureDelay = _delayMode == 0 ? _delayFast : _delaySlow;   // 兼容旧字段（秒×10）
+                _liveShot = Read(KeyLiveShot, "1") != "0";
+            _liveShot = Read(KeyLiveShot, "1") != "0";   // 默认用实况窗倒计时
                 _panelActions = Read(KeyPanelActions, "1") != "0";
                 _editorMode = (int)ReadNumber(KeyEditorMode, 0);
             }
@@ -452,13 +495,100 @@ namespace ScPad
             Write(KeyPanelSlots, value.ToString());
         }
 
-        /// <summary>抓屏时要不要先把灵动岛藏起来（默认开）。</summary>
+        /// <summary>抓屏时要不要先把灵动岛藏起来（默认关）。</summary>
         internal bool HideOnCapture { get { lock (_lock) return _hideOnCapture; } }
 
         internal void SetHideOnCapture(bool value)
         {
             lock (_lock) _hideOnCapture = value;
             Write(KeyHideOnCapture, value ? "1" : "0");
+        }
+
+        /// <summary>截屏倒计时（秒，1~10）。实况窗外圈按这个时长从满圈走空。</summary>
+        /// <summary>是否用实况窗倒计时截图（关掉则按快捷键立刻抓屏）。</summary>
+        internal bool LiveShot { get { lock (_lock) return _liveShot; } }
+
+        internal void SetLiveShot(bool value)
+        {
+            lock (_lock) _liveShot = value;
+            Write(KeyLiveShot, value ? "1" : "0");
+        }
+
+        /// <summary>动画挡默认 0.2 秒、延迟挡默认 1.5 秒（单位 0.1 秒）。</summary>
+        internal const int DefaultDelayFastX10 = 2;
+        internal const int DefaultDelaySlowX10 = 15;
+
+        /// <summary>0 = 动画挡（0.1~0.5 秒，默认 0.2），1 = 延迟挡（1~3 秒，默认 1.5）。</summary>
+        internal int DelayMode { get { lock (_lock) return _delayMode; } }
+
+        internal void SetDelayMode(int value)
+        {
+            if (value < 0) value = 0;
+            if (value > 1) value = 1;
+            lock (_lock) _delayMode = value;
+            Write(KeyDelayMode, value.ToString());
+        }
+
+        /// <summary>动画挡时长，单位 0.1 秒（1~5）。</summary>
+        internal int DelayFast { get { lock (_lock) return _delayFast; } }
+
+        internal void SetDelayFast(int value)
+        {
+            value = ClampFast(value);
+            lock (_lock) _delayFast = value;
+            Write(KeyDelayFast, value.ToString());
+        }
+
+        /// <summary>延迟挡时长，单位 0.1 秒（10~30）。</summary>
+        internal int DelaySlow { get { lock (_lock) return _delaySlow; } }
+
+        internal void SetDelaySlow(int value)
+        {
+            value = ClampSlow(value);
+            lock (_lock) _delaySlow = value;
+            Write(KeyDelaySlow, value.ToString());
+        }
+
+        /// <summary>当前生效的倒计时（毫秒）：按档位取 fast / slow。</summary>
+        internal int CaptureDelayMs
+        {
+            get
+            {
+                lock (_lock) return (_delayMode == 0 ? _delayFast : _delaySlow) * 100;
+            }
+        }
+
+        internal static int ClampFast(int value)
+        {
+            if (value < 1) return 1;
+            if (value > 5) return 5;
+            return value;
+        }
+
+        internal static int ClampSlow(int value)
+        {
+            if (value < 10) return 10;
+            if (value > 30) return 30;
+            return value;
+        }
+
+        /// <summary>旧接口：秒。仅兼容老调用与自检。</summary>
+        internal int CaptureDelay
+        {
+            get { return (int)Math.Round(CaptureDelayMs / 1000.0, MidpointRounding.AwayFromZero); }
+        }
+
+        internal void SetCaptureDelay(int seconds)
+        {
+            if (DelayMode == 0) SetDelayFast(ClampFast(seconds * 10));
+            else SetDelaySlow(ClampSlow(seconds * 10));
+        }
+
+        internal static int ClampDelay(int value)
+        {
+            if (value < 1) return 1;
+            if (value > 10) return 10;
+            return value;
         }
 
         /// <summary>收集模式：0 = 自动，1 = 手动（只收显式操作），2 = 关闭。</summary>

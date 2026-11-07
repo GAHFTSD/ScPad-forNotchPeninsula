@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using NotchPeninsula;
 using NotchPeninsula.Plugins;
 
@@ -40,6 +40,11 @@ namespace ScPad
         private ScPadWidget _widget;
         private ScPadSettingsPage _settingsPage;
         private WheelHook _wheel;
+        private ScPadLiveWindow _live;
+        private IDisposable _liveReg;
+        private bool _liveTried;
+        private bool _liveRemoved;
+        private System.Threading.Timer _liveReleaseTimer;
         private bool _settingsHooked;
         private bool _fontHooked;
         private bool _disposed;
@@ -48,7 +53,7 @@ namespace ScPad
 
         public string DisplayName { get { return "ScPad"; } }
 
-        public string Version { get { return "1.0.0"; } }
+        public string Version { get { return "1.1.1"; } }
 
         public string Author { get { return "GAHFTSD"; } }
 
@@ -83,6 +88,14 @@ namespace ScPad
 
                 // 先注册组件，再启动采集：OnActivate 里能拿到宿主引用
                 host.RegisterWidget(_widget);
+
+                // 探测宿主的「显示/隐藏灵动岛」入口（抓屏藏岛用；拿不到就只抓屏、不藏岛）
+                try
+                {
+                    bool canHide = HostIsland.Available;
+                    Log.Info("[ScPad] 藏岛入口：" + (canHide ? "可用（走宿主自动隐藏动画）" : "不可用（抓屏不藏岛，不影响截图）"));
+                }
+                catch { }
 
                 // 设置界面交给官方「插件设置中心」渲染（只在 Initialize 里注册一次！）
                 // 自定义控件是运行时按宿主的 SettingControl 反射生成的，先生成一次：
@@ -255,6 +268,134 @@ namespace ScPad
             }
         }
 
+        /// <summary>
+        /// 按需注册实况窗：只在倒计时开始前注册（带生成动画），倒计时结束后收掉。
+        /// 失败（宿主旧版 / 实况窗被用户在实况窗管理里关掉）就退回立即抓屏。
+        /// </summary>
+        private bool EnsureLiveWindow()
+        {
+            if (_liveRemoved) return false;
+            if (_liveReg != null) return true;
+            if (_host == null) return false;
+
+            try
+            {
+                _live = new ScPadLiveWindow(this);
+                _liveReg = _host.RegisterLiveWindow(_live);
+            }
+            catch (Exception ex)
+            {
+                _live = null;
+                _liveReg = null;
+                Log.Warn("[ScPad] 注册实况窗失败，改为直接抓屏：" + ex.Message);
+            }
+
+            if (_liveReg == null)
+            {
+                Log.Info("[ScPad] 实况窗不可用（可能被用户在实况窗管理里关闭），使用直接抓屏");
+                return false;
+            }
+
+            Log.Info("[ScPad] 实况窗截图键已注册");
+            return true;
+        }
+
+        /// <summary>倒计时结束、气泡已经闪完，过一会儿把气泡收掉（下次按键重新长出来）。</summary>
+        internal void RequestReleaseLiveWindow(int delayMs)
+        {
+            try
+            {
+                if (_liveReleaseTimer != null) _liveReleaseTimer.Dispose();
+            }
+            catch { }
+
+            try
+            {
+                _liveReleaseTimer = new System.Threading.Timer(delegate { ReleaseLiveWindowNow(); }, null,
+                    Math.Max(200, delayMs), System.Threading.Timeout.Infinite);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("[ScPad] 安排实况窗收起失败：" + ex.Message);
+            }
+        }
+
+        private void ReleaseLiveWindowNow()
+        {
+            IDisposable reg;
+
+            try
+            {
+                if (_liveReleaseTimer != null)
+                {
+                    _liveReleaseTimer.Dispose();
+                    _liveReleaseTimer = null;
+                }
+            }
+            catch { }
+
+            reg = _liveReg;
+            _liveReg = null;
+            _live = null;
+
+            if (reg != null)
+            {
+                try { reg.Dispose(); }
+                catch (Exception ex) { Log.Warn("[ScPad] 注销实况窗失败：" + ex.Message); }
+            }
+        }
+
+        /// <summary>默认截屏键：先走实况窗倒计时，再抓屏；实况窗不可用就立刻抓。</summary>
+        internal void RequestTimedCapture()
+        {
+            if (_capture == null) return;
+
+            if (!_settings.LiveShot || !EnsureLiveWindow())
+            {
+                _capture.RequestScreenCaptureNow();
+                return;
+            }
+
+            if (_live == null) return;
+            if (_live.IsBusy) { _live.FinishNow(); return; }   // 连按 = 立刻截
+            _live.BeginCountdownMs(_settings.CaptureDelayMs);
+        }
+
+        /// <summary>点实况窗（宿主展开面板）时：正在倒计时就直接收尾截屏，否则从头开始。</summary>
+        internal void StartTimedCaptureFromLiveWindow()
+        {
+            if (_live != null && _live.IsBusy)
+            {
+                _live.FinishNow();
+                return;
+            }
+
+            RequestTimedCapture();
+        }
+
+        internal void OnLiveCountdownFinished()
+        {
+            CaptureService capture = _capture;
+            if (capture != null) capture.RequestScreenCaptureNow();
+        }
+
+        internal void OnLiveWindowRemoved(ScPadLiveWindow window)
+        {
+            if (!ReferenceEquals(_live, window)) return;
+            _live = null;
+            _liveReg = null;
+            _liveRemoved = true;
+        }
+
+        internal void RequestRedrawSafe()
+        {
+            try
+            {
+                if (_host != null) _host.RequestRedraw();
+            }
+            catch { }
+        }
+
         internal void ClosePanel()
         {
             try
@@ -324,6 +465,27 @@ namespace ScPad
             {
                 Log.Warn("[ScPad] 关闭采集服务失败：" + ex.Message);
             }
+
+            try
+            {
+                try
+            {
+                if (_liveReleaseTimer != null)
+                {
+                    _liveReleaseTimer.Dispose();
+                    _liveReleaseTimer = null;
+                }
+            }
+            catch { }
+
+            if (_liveReg != null) _liveReg.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("[ScPad] 注销实况窗失败：" + ex.Message);
+            }
+            _liveReg = null;
+            _live = null;
 
             _capture = null;
             Log.Info("[ScPad] 插件已卸载");

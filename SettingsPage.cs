@@ -63,7 +63,22 @@ namespace ScPad
                 list.Add(new ChoiceSetting("collectMode", "收集模式（自动 / 手动 / 关闭）",
                     new string[] { "自动收集", "手动收集", "关闭收集" }, _settings.CollectMode));
 
-                list.Add(new ToggleSetting("hideOnCapture", "抓屏时先藏起灵动岛", true));
+                list.Add(new ToggleSetting("hideOnCapture", "抓屏时先藏起灵动岛（走宿主自动隐藏动画）", false));
+
+                list.Add(new ToggleSetting("liveShot", "实况窗倒计时截图（按键后先倒计时再截）", true));
+
+                list.Add(new ChoiceSetting("delayMode", "截屏延迟档位",
+                    new string[] { "动画挡 · 0.1~0.5 秒（几乎无感）", "延迟挡 · 1~3 秒（留出摆姿势时间）" },
+                    _settings.DelayMode));
+
+                list.Add(new NumberSetting("delayFast",
+                    "动画挡时长 ×0.1 秒 · 1~5（默认 2 = 0.2 秒）", 1f, 5f, 1f, (float)_settings.DelayFast));
+
+                list.Add(new NumberSetting("delaySlow",
+                    "延迟挡时长 ×0.1 秒 · 10~30（默认 15 = 1.5 秒）", 10f, 30f, 1f, (float)_settings.DelaySlow));
+
+                list.Add(new NumberSetting("captureDelay",
+                    "截屏倒计时（秒）· 实况窗外圈倒计时", 1f, 10f, 1f, 3f));
 
                 list.Add(new ToggleSetting("panelActions", "面板底部显示设置区（更多设置 / 停止收集 / 图片编辑）", true));
 

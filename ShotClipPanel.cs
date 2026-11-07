@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using NotchPeninsula.Plugins;
@@ -135,6 +135,9 @@ namespace ScPad
         }
 
         public TimeSpan AutoCollapseDelay { get { return Timeout.InfiniteTimeSpan; } }
+
+        // 2.2.0 的 IDetailPage 新增默认成员；按真实宿主接口编译时需要显式实现。
+        public bool ResizeWithContent { get { return false; } }
 
         public bool AcceptsRightClick { get { return false; } }
 

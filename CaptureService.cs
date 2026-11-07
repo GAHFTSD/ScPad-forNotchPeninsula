@@ -379,6 +379,12 @@ namespace ScPad
         /// </summary>
         internal void RequestScreenCapture()
         {
+            RequestScreenCaptureNow();
+        }
+
+        /// <summary>倒计时结束 / 实况窗点击后，真正抓屏。</summary>
+        internal void RequestScreenCaptureNow()
+        {
             _jobs.Enqueue(delegate { ScreenCaptureNow(); });
             _wake.Set();
         }
@@ -388,7 +394,7 @@ namespace ScPad
             bool hide = _store.Settings.HideOnCapture;
 
             string error;
-            byte[] png = ScreenCapture.CaptureAllScreens(hide, ApplyDim, out error);
+            byte[] png = ScreenCapture.CaptureAllScreens(hide, out error);
             if (png == null)
             {
                 Reminders.Post(_host, "ScPad", "抓屏失败：" + (error == null ? "未知原因" : error), null);
@@ -667,7 +673,8 @@ namespace ScPad
                         return;
                     }
 
-                    ScreenCaptureNow();
+                    // 默认截屏键 → 实况窗倒计时（倒计时结束再抓屏）
+                    _plugin.RequestTimedCapture();
                     break;
             }
         }
@@ -904,11 +911,13 @@ namespace ScPad
         {
             PluginSettings settings = _store.Settings;
             settings.SetCollectMode(PluginSettings.CollectAuto);
+            settings.SetLiveShot(true);
+            settings.SetCaptureDelay(3);
             settings.AutoPeek = true;
             settings.SetMaxItems(PluginSettings.DefaultShots);
             settings.SetThumbScale(0);
             settings.SetPanelSlots(PluginSettings.DefaultSlots);
-            settings.SetHideOnCapture(true);
+            settings.SetHideOnCapture(false);
             settings.SetClipboardEnabled(true);
             settings.SetHotkey(0, new HotkeySpec(HotkeySpec.ModControl, HotkeySpec.VkSnapshot));
             settings.SetHotkeyAction(0, PluginSettings.ActionCapture);
