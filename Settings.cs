@@ -325,19 +325,11 @@ namespace ScPad
             // 两挡：动画挡（0.1~0.5s，默认 0.2s）/ 延迟挡（1~3s，默认 1.5s）
             _delayFast = ClampFast((int)ReadNumber(KeyDelayFast, DefaultDelayFastX10));
             _delaySlow = ClampSlow((int)ReadNumber(KeyDelaySlow, DefaultDelaySlowX10));
-            string legacyDelay = Read(KeyCaptureDelay, "");
-            int legacyMode = legacyDelay.Length > 0 ? 1 : 0;   // 老版本用过「截屏延迟（秒）」→ 直接进延迟挡
-            if (legacyDelay.Length > 0)
-            {
-                int legacySeconds;
-                if (int.TryParse(legacyDelay, out legacySeconds))
-                    _delaySlow = ClampSlow(legacySeconds * 10);
-            }
-            _delayMode = (int)ReadNumber(KeyDelayMode, legacyMode);
+            _delayMode = (int)ReadNumber(KeyDelayMode, 0);
             if (_delayMode < 0) _delayMode = 0;
             if (_delayMode > 1) _delayMode = 1;
             _captureDelay = _delayMode == 0 ? _delayFast : _delaySlow;   // 兼容旧字段（秒×10）
-            _liveShot = Read(KeyLiveShot, "1") != "0";   // 默认用实况窗倒计时
+            _liveShot = Read(KeyLiveShot, "0") != "0";   // 默认关闭（测试功能，用户自行开启）
             _panelActions = Read(KeyPanelActions, "1") != "0";     // 面板底部设置区（默认开）
             _editorMode = (int)ReadNumber(KeyEditorMode, 0);        // 0 = 照片（系统默认）, 1 = 画图
 
@@ -411,20 +403,11 @@ namespace ScPad
                 // 两挡：动画挡（0.1~0.5s，默认 0.2s）/ 延迟挡（1~3s，默认 1.5s）
             _delayFast = ClampFast((int)ReadNumber(KeyDelayFast, DefaultDelayFastX10));
             _delaySlow = ClampSlow((int)ReadNumber(KeyDelaySlow, DefaultDelaySlowX10));
-            string legacyDelay = Read(KeyCaptureDelay, "");
-            int legacyMode = legacyDelay.Length > 0 ? 1 : 0;   // 老版本用过「截屏延迟（秒）」→ 直接进延迟挡
-            if (legacyDelay.Length > 0)
-            {
-                int legacySeconds;
-                if (int.TryParse(legacyDelay, out legacySeconds))
-                    _delaySlow = ClampSlow(legacySeconds * 10);
-            }
-            _delayMode = (int)ReadNumber(KeyDelayMode, legacyMode);
+            _delayMode = (int)ReadNumber(KeyDelayMode, 0);
             if (_delayMode < 0) _delayMode = 0;
             if (_delayMode > 1) _delayMode = 1;
             _captureDelay = _delayMode == 0 ? _delayFast : _delaySlow;   // 兼容旧字段（秒×10）
-                _liveShot = Read(KeyLiveShot, "1") != "0";
-            _liveShot = Read(KeyLiveShot, "1") != "0";   // 默认用实况窗倒计时
+                _liveShot = Read(KeyLiveShot, "0") != "0";
                 _panelActions = Read(KeyPanelActions, "1") != "0";
                 _editorMode = (int)ReadNumber(KeyEditorMode, 0);
             }

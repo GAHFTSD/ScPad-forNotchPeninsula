@@ -100,6 +100,29 @@ namespace NotchPeninsula.Plugins
         public bool IsHovered { get { return _isHovered; } }
     }
 
+    // ---- 实况窗（2.2.0 新增） ----
+    public struct LiveWindowVisual
+    {
+        public float Progress { get; set; }
+        public string Status { get; set; }
+        public string Title { get; set; }
+        public string PercentText { get; set; }
+        public SKColor? ProgressColor { get; set; }
+        public bool SpinInner { get; set; }
+        public float SpinSpeed { get; set; }
+        public bool Completed { get; set; }
+    }
+
+    public interface ILiveWindow
+    {
+        string Id { get; }
+        LiveWindowVisual GetVisual();
+        void DrawInner(SKCanvas canvas, SKRect rect, WidgetFrame frame);
+        IDetailPage DetailPage { get; }
+        void OnExpand();
+        void OnRemoved();
+        void OnHostEnabledChanged(bool enabled);
+    }
     // ---- 五种「页」 ----
 
     public interface IWidget
@@ -271,6 +294,7 @@ namespace NotchPeninsula.Plugins
         void RegisterWidget(IWidget widget);
         void RegisterSecondaryWidget(ISecondaryWidget widget);
         void RegisterSettingsPage(ISettingsPage page);
+        IDisposable RegisterLiveWindow(ILiveWindow window);
 
         RenderTheme CurrentTheme { get; }
 
@@ -322,12 +346,27 @@ namespace NotchPeninsula
         }
     }
 
-    // 岛体窗口句柄：整屏抓图前先把岛体藏起来（真实成员是 public static IntPtr InstanceHandle）。
+    // 岛体窗口句柄 / 可见性：抓屏前走宿主自动隐藏动画。
     public static class NotchWindow
     {
         public static IntPtr InstanceHandle { get { return IntPtr.Zero; } }
         public static bool IsAutoHideEnabled;
         public static bool IsAutoHideEffective { get { return false; } }
+        /// <summary>自检里数「收起 / 唤回」被调了几次，用来验证抓屏确实走了宿主的退场动画。</summary>
+        public static int ToggleCount;
+
+        public static void ToggleIslandVisibility()
+        {
+            ToggleCount++;
+            bool hidden = Renderer.IslandHidden;
+            Renderer.IslandHidden = !hidden;
+        }
+    }
+
+    // 真宿主 Renderer.IslandHidden 是 public static volatile bool。
+    public static class Renderer
+    {
+        public static bool IslandHidden;
     }
 
     public static class FontConfig

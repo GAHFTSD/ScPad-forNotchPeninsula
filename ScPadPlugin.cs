@@ -45,13 +45,31 @@ namespace ScPad
         private bool _liveTried;
         private bool _liveRemoved;
         private System.Threading.Timer _liveReleaseTimer;
+        private int _waking;
+
+        /// <summary>最近一次气泡注销（开始坠入）与面板展开的时刻，供自检验证顺序。</summary>
+        internal long LastLiveGoneTicks;
+        internal long LastPanelOpenTicks;
+
+        /// <summary>实况窗这一轮还没走完（倒计时 / 坠入中）：抓屏回调先别自己展开面板。</summary>
+        internal bool LivePanelDeferred
+        {
+            get
+            {
+                if (_panelAfterLive) return true;
+                if (_waking != 0) return true;
+                ScPadLiveWindow live = _live;
+                return live != null && live.IsBusy;
+            }
+        }
+        private bool _panelAfterLive;
         private bool _settingsHooked;
         private bool _fontHooked;
         private bool _disposed;
 
         public string Id { get { return PluginId; } }
 
-        public string DisplayName { get { return "ScPad"; } }
+        public string DisplayName { get { return "ScPad（测试）"; } }
 
         public string Version { get { return "1.1.1"; } }
 
@@ -275,8 +293,16 @@ namespace ScPad
         private bool EnsureLiveWindow()
         {
             if (_liveRemoved) return false;
-            if (_liveReg != null) return true;
             if (_host == null) return false;
+
+            // 每次都换一颗"新"气泡：先把上一轮可能残留的句柄清掉，
+            // 这样宿主的生成动画每次都会重播，也不会把灰点带进下一轮。
+            if (_liveReg != null)
+            {
+                try { _liveReg.Dispose(); } catch { }
+                _liveReg = null;
+                _live = null;
+            }
 
             try
             {
@@ -300,24 +326,14 @@ namespace ScPad
             return true;
         }
 
-        /// <summary>倒计时结束、气泡已经闪完，过一会儿把气泡收掉（下次按键重新长出来）。</summary>
-        internal void RequestReleaseLiveWindow(int delayMs)
+        /// <summary>
+        /// 倒计时结束：立刻注销气泡 —— 宿主会播 0.5 秒的「吞回岛体」动画（气泡坠入灵动岛）。
+        /// 动画落定后再展开面板显示新截图。
+        /// </summary>
+        internal void RequestFinishLiveWindow()
         {
-            try
-            {
-                if (_liveReleaseTimer != null) _liveReleaseTimer.Dispose();
-            }
-            catch { }
-
-            try
-            {
-                _liveReleaseTimer = new System.Threading.Timer(delegate { ReleaseLiveWindowNow(); }, null,
-                    Math.Max(200, delayMs), System.Threading.Timeout.Infinite);
-            }
-            catch (Exception ex)
-            {
-                Log.Warn("[ScPad] 安排实况窗收起失败：" + ex.Message);
-            }
+            _panelAfterLive = _settings.AutoPeek;
+            ReleaseLiveWindowNow();
         }
 
         private void ReleaseLiveWindowNow()
@@ -340,8 +356,47 @@ namespace ScPad
 
             if (reg != null)
             {
+                // Dispose 之后宿主播「气泡坠入岛体」动画（ExitSeconds ≈ 0.5 秒）
                 try { reg.Dispose(); }
                 catch (Exception ex) { Log.Warn("[ScPad] 注销实况窗失败：" + ex.Message); }
+                LastLiveGoneTicks = Environment.TickCount64;
+            }
+
+            // 等坠入动画落定，再展开面板：完整动线 = 取消隐藏 → 弹气泡倒计时 → 坠入岛 → 展开面板
+            if (_panelAfterLive)
+            {
+                _panelAfterLive = false;
+
+                try
+                {
+                    if (_liveReleaseTimer != null)
+                    {
+                        _liveReleaseTimer.Dispose();
+                        _liveReleaseTimer = null;
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    _liveReleaseTimer = new System.Threading.Timer(delegate
+                    {
+                        try
+                        {
+                            LastPanelOpenTicks = Environment.TickCount64;
+                            CaptureService capture = _capture;
+                            if (capture != null) capture.RequestPeekOpen();
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Warn("[ScPad] 坠入后展开面板失败：" + ex.Message);
+                        }
+                    }, null, 560, System.Threading.Timeout.Infinite);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("[ScPad] 安排展开面板失败：" + ex.Message);
+                }
             }
         }
 
@@ -358,6 +413,43 @@ namespace ScPad
 
             if (_live == null) return;
             if (_live.IsBusy) { _live.FinishNow(); return; }   // 连按 = 立刻截
+
+            // 岛缩在屏幕顶端时：先让它滑回来（宿主动画），再长气泡，别让气泡长在屏幕外
+            bool hidden = false;
+            try { hidden = HostIsland.IsHidden(); } catch { }
+
+            if (hidden)
+            {
+                if (System.Threading.Interlocked.Exchange(ref _waking, 1) == 1) return;
+
+                System.Threading.ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        HostIsland.WaitUntilVisible(1600);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn("[ScPad] 唤回灵动岛失败：" + ex.Message);
+                    }
+                    finally
+                    {
+                        System.Threading.Interlocked.Exchange(ref _waking, 0);
+                    }
+
+                    try
+                    {
+                        if (_live != null && !_live.IsBusy)
+                            _live.BeginCountdownMs(_settings.CaptureDelayMs);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn("[ScPad] 唤回后开始倒计时失败：" + ex.Message);
+                    }
+                });
+                return;
+            }
+
             _live.BeginCountdownMs(_settings.CaptureDelayMs);
         }
 
@@ -376,7 +468,10 @@ namespace ScPad
         internal void OnLiveCountdownFinished()
         {
             CaptureService capture = _capture;
-            if (capture != null) capture.RequestScreenCaptureNow();
+            if (capture == null) return;
+
+            // 抓屏立刻开始；但面板要等气泡「坠入岛体」的动画落定后再展开
+            capture.RequestScreenCaptureNow(true);
         }
 
         internal void OnLiveWindowRemoved(ScPadLiveWindow window)

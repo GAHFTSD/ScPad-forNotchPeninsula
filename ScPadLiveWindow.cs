@@ -29,7 +29,7 @@ namespace ScPad
         private const int PhaseFlash = 2;
         private const int PhaseGray = 3;
         private const int TickMs = 30;
-        private const int FlashMs = 450;
+        private const int FlashMs = 150;   // 白闪一下就好，紧接着就坠入岛体
 
         private readonly ScPadPlugin _plugin;
         private readonly CaptureLiveDetailPage _detail;
@@ -151,8 +151,8 @@ namespace ScPad
                         _progress = 0f;
                         _plugin.RequestRedrawSafe();
 
-                        // 闪完变灰，停一会儿把气泡收掉；下次按键再重新长出来
-                        _plugin.RequestReleaseLiveWindow(900);
+                        // 闪完变灰 → 立刻注销：宿主会播「吞回岛体」动画（气泡坠入灵动岛）
+                        _plugin.RequestFinishLiveWindow();
                     }
                 }
             }

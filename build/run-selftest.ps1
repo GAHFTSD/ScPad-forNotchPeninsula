@@ -41,12 +41,19 @@ if (-not $SkiaSharpPath) {
         if (-not (Test-Path $root)) { continue }
         $candidates += Get-ChildItem $root -Recurse -Filter 'SkiaSharp.dll' -ErrorAction SilentlyContinue | Select-Object -First 40
     }
+    $fallback = $null
     foreach ($candidate in $candidates) {
         try {
             $name = [System.Reflection.AssemblyName]::GetAssemblyName($candidate.FullName)
-            if ($name.Version.Major -eq 2 -and $name.Version.Minor -eq 88) { $SkiaSharpPath = $candidate.FullName; break }
+            if ($name.Version.Major -ne 2 -or $name.Version.Minor -ne 88) { continue }
+
+            # 必须同目录有 libSkiaSharp.dll，否则运行时会 DllNotFoundException
+            $probeNative = Join-Path $candidate.DirectoryName 'libSkiaSharp.dll'
+            if (Test-Path $probeNative) { $SkiaSharpPath = $candidate.FullName; break }
+            if (-not $fallback) { $fallback = $candidate.FullName }
         } catch { }
     }
+    if (-not $SkiaSharpPath -and $fallback) { $SkiaSharpPath = $fallback }
 }
 if (-not $SkiaSharpPath) { throw '找不到 SkiaSharp 2.88，请用 -SkiaSharpPath 指定' }
 

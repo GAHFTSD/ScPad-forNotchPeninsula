@@ -1,0 +1,4 @@
+﻿# ScPad state v2
+0	D:\GoodExecution\Execs\ScPad\build\preview\_data\_guide\Guide\guide-3.png
+0	D:\GoodExecution\Execs\ScPad\build\preview\_data\_guide\Guide\guide-2.png
+0	D:\GoodExecution\Execs\ScPad\build\preview\_data\_guide\Guide\guide-1.png

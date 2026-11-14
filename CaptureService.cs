@@ -60,6 +60,7 @@ namespace ScPad
         private double _appliedScale = -1;
         private string _appliedFolder;
         private bool _appliedPaused;
+        private int _deferPeek;
         private int _appliedSlots = -1;
         private bool _appliedPanelActions = true;
         private string _appliedHotkeyA;
@@ -306,7 +307,11 @@ namespace ScPad
 
             try
             {
-                if (_store.AutoPeek && !panelAlreadyOpen)
+                // 实况窗那一轮还没走完（倒计时 / 正在坠入岛里）→ 面板先别开，
+                // 等气泡落定后由插件回调 RequestPeekOpen 再展开。
+                bool defer = panelAlreadyOpen || _plugin.LivePanelDeferred;
+
+                if (_store.AutoPeek && !defer)
                 {
                     Interlocked.Exchange(ref _peekDeadlineTicks, DateTime.UtcNow.AddSeconds(PeekSeconds).Ticks);
                     _host.TryOpenDetailPage(ScPadPlugin.WidgetId);
@@ -385,12 +390,39 @@ namespace ScPad
         /// <summary>倒计时结束 / 实况窗点击后，真正抓屏。</summary>
         internal void RequestScreenCaptureNow()
         {
+            RequestScreenCaptureNow(false);
+        }
+
+        /// <summary>deferPeek = 抓完先别展开面板（等实况窗坠回岛里再展开）。</summary>
+        internal void RequestScreenCaptureNow(bool deferPeek)
+        {
+            if (deferPeek) Interlocked.Exchange(ref _deferPeek, 1);
             _jobs.Enqueue(delegate { ScreenCaptureNow(); });
+            _wake.Set();
+        }
+
+        /// <summary>实况窗坠回岛里之后，再展开面板（和平时一样带自动收起）。</summary>
+        internal void RequestPeekOpen()
+        {
+            _jobs.Enqueue(delegate
+            {
+                try
+                {
+                    if (!_store.AutoPeek) return;
+                    Interlocked.Exchange(ref _peekDeadlineTicks, DateTime.UtcNow.AddSeconds(PeekSeconds).Ticks);
+                    _host.TryOpenDetailPage(ScPadPlugin.WidgetId);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("[ScPad] 延后展开面板失败：" + ex.Message);
+                }
+            });
             _wake.Set();
         }
 
         private void ScreenCaptureNow()
         {
+            bool deferPeek = Interlocked.Exchange(ref _deferPeek, 0) == 1;
             bool hide = _store.Settings.HideOnCapture;
 
             string error;
@@ -911,7 +943,7 @@ namespace ScPad
         {
             PluginSettings settings = _store.Settings;
             settings.SetCollectMode(PluginSettings.CollectAuto);
-            settings.SetLiveShot(true);
+            settings.SetLiveShot(false);
             settings.SetCaptureDelay(3);
             settings.AutoPeek = true;
             settings.SetMaxItems(PluginSettings.DefaultShots);

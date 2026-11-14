@@ -65,7 +65,7 @@ namespace ScPad
 
                 list.Add(new ToggleSetting("hideOnCapture", "抓屏时先藏起灵动岛（走宿主自动隐藏动画）", false));
 
-                list.Add(new ToggleSetting("liveShot", "实况窗倒计时截图（按键后先倒计时再截）", true));
+                list.Add(new ToggleSetting("liveShot", "实况窗倒计时截图（测试）· 默认关闭，开启后按截屏键会先走实况窗动画", false));
 
                 list.Add(new ChoiceSetting("delayMode", "截屏延迟档位",
                     new string[] { "动画挡 · 0.1~0.5 秒（几乎无感）", "延迟挡 · 1~3 秒（留出摆姿势时间）" },

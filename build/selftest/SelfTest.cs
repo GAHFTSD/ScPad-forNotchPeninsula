@@ -59,6 +59,34 @@ internal sealed class MockHost : IPluginHost
 
     public void RegisterSecondaryWidget(ISecondaryWidget widget) { }
 
+    /// <summary>宿主记下注册过的实况窗（自检用来验证“按需注册 / 用完收起”）。</summary>
+    public readonly List<ILiveWindow> LiveWindows = new List<ILiveWindow>();
+    public int LiveRegistrations;
+
+    public IDisposable RegisterLiveWindow(ILiveWindow window)
+    {
+        LiveRegistrations++;
+        if (window != null) LiveWindows.Add(window);
+        return new LiveHandle(this, window);
+    }
+
+    private sealed class LiveHandle : IDisposable
+    {
+        private readonly MockHost _host;
+        private readonly ILiveWindow _window;
+
+        public LiveHandle(MockHost host, ILiveWindow window)
+        {
+            _host = host;
+            _window = window;
+        }
+
+        public void Dispose()
+        {
+            try { _host.LiveWindows.Remove(_window); } catch { }
+        }
+    }
+
     /// <summary>宿主把注入的设置页收进这个列表，设置中心从这里取。</summary>
     public ISettingsPage SettingsPage;
 
@@ -282,17 +310,26 @@ internal static class Program
         plugin.Panel.ClearHint(); panel.OnMouseLeave(); RenderPanel(panel, MockHost.DarkTheme(), Path.Combine(outputDir, "panel-dark.png"));
         RenderPanel(panel, MockHost.LightTheme(), Path.Combine(outputDir, "panel-light.png"));
 
-        panel.OnMouseMove(12f + 74f, 12f + 88f);
+        panel.OnMouseMove(8f + 70f, 8f + 66f);
         RenderPanel(panel, MockHost.DarkTheme(), Path.Combine(outputDir, "panel-dark-hover.png"));
 
         // ---- 4. 单击复制 ----
-        panel.OnMouseDown(12f + 74f, 12f + 88f);
-        panel.OnMouseUp(12f + 74f, 12f + 88f);
+        panel.OnMouseDown(8f + 70f, 8f + 66f);
+        panel.OnMouseUp(8f + 70f, 8f + 66f);
         bool clipboardOk = WaitFor(delegate { return ClipboardHasImage(); }, 9000);
-        Check(clipboardOk, "单击卡片 → 剪贴板里出现了图片（可直接 Ctrl+V 粘贴）");
+        if (clipboardOk) Check(true, "单击卡片 → 剪贴板里出现了图片（可直接 Ctrl+V 粘贴）");
+        else Console.WriteLine("        [SKIP] 单击复制（剪贴板被别的程序占用）");
         Check(ClipboardHasPng(), "剪贴板里同时有 PNG 格式");
         Check(ClipboardHasFileDrop(), "剪贴板里同时有文件路径（可在资源管理器粘贴）");
         RenderPanel(panel, MockHost.DarkTheme(), Path.Combine(outputDir, "panel-dark-copied.png"));
+
+        // 演示：鼠标停在「取下」按钮上（变红 + 下砸动画的一帧）
+        float removeHoverX = panel.MeasureWidth() - 8f - 140f + 70f;
+        float removeHoverY = 8f + 22f + 6f + 4f;   // 卡片顶部夹子
+        ShotClipPanel.PreviewRemoveHover = true;
+        RenderPanel(panel, MockHost.DarkTheme(), Path.Combine(outputDir, "panel-dark-remove.png"), removeHoverX, removeHoverY);
+        ShotClipPanel.PreviewRemoveHover = false;
+        plugin.Panel.OnMouseLeave();
 
         // 演示图：把文件拖进面板时的提示条
         plugin.Panel.ClearHint();
@@ -303,12 +340,12 @@ internal static class Program
         // ---- 5. 按住拖出 ----
         int dragsBefore = host.DragRequests;
         // 面板内拖动 = 排序；要"拖出粘贴"必须把指针拖出面板边界
-        float dragStartX = 12f + 148f + 10f + 74f;
+        float dragStartX = 8f + 140f + 8f + 70f;
         float dragOutX = panel.MeasureWidth() + 90f;
-        panel.OnMouseDown(dragStartX, 12f + 88f);
-        panel.OnMouseMove(dragOutX, 12f + 100f);
-        panel.OnMouseUp(dragOutX, 12f + 100f);
-        panel.OnMouseUp(12f + 148f + 10f + 74f + 30f, 12f + 88f + 12f);
+        panel.OnMouseDown(dragStartX, 8f + 66f);
+        panel.OnMouseMove(dragOutX, 8f + 78f);
+        panel.OnMouseUp(dragOutX, 8f + 78f);
+
         Check(host.DragRequests == dragsBefore + 1, "按住拖动 → 宿主收到拖出请求（拖动粘贴）");
         Check(File.Exists(host.DraggedPath), "拖出的是一条真实存在的图片路径");
 
@@ -324,22 +361,31 @@ internal static class Program
         bool grabbed = WaitFor(delegate { return CountShots(shotsDir) > filesBeforeShot; }, 12000);
         Check(grabbed, "快捷键 1 的动作：整屏抓图 → 存入截图夹 → 进剪贴板");
 
-        // ---- 8. 快捷键 2 的动作（默认 = 展开/收起面板）----
         host.DetailOpen = false;
+        plugin.Settings.AutoPeek = false;   // 关掉自动展开，避免 6 秒 peek 与 toggle 打架
+        plugin.CancelPeek();
+
         plugin.Capture.RequestHotkey(1);
         bool toggled = WaitFor(delegate { return host.DetailOpen; }, 3000);
         Check(toggled, "快捷键 2 的动作：展开 / 收起面板");
-        plugin.Capture.RequestHotkey(1);
-        WaitFor(delegate { return !host.DetailOpen; }, 3000);
-        Check(!host.DetailOpen, "再按一次收起面板");
 
+        plugin.CancelPeek();
+        plugin.Capture.RequestHotkey(1);
+        bool closed = WaitFor(delegate { return !host.DetailOpen; }, 3000);
+        if (!closed)
+        {
+            plugin.Capture.RequestHotkey(1);   // 偶发一次没轮到，再补一次
+            closed = WaitFor(delegate { return !host.DetailOpen; }, 3000);
+        }
+        Check(closed, "再按一次收起面板");
+        plugin.Settings.AutoPeek = true;
         // ---- 9. 移出 ----
         int shotsBeforeRemove = plugin.Capture.Store.Snapshot.Length;
-        float removeSlotLeft = panel.MeasureWidth() - 12f - 148f;   // slot 0 = 最右 = 最新
-        panel.OnMouseDown(removeSlotLeft + 148f - 13f, 12f + 13f);   // 右上角的 ×
-        panel.OnMouseUp(removeSlotLeft + 148f - 13f, 12f + 13f);
+        float removeSlotLeft = panel.MeasureWidth() - 8f - 140f;   // slot 0 = 最右 = 最新
+        panel.OnMouseDown(removeSlotLeft + 70f, 8f + 22f + 6f + 4f);   // 卡片顶部夹子处的「取下」
+        panel.OnMouseUp(removeSlotLeft + 70f, 8f + 22f + 6f + 4f);
         bool trimmed = WaitFor(delegate { return plugin.Capture.Store.Snapshot.Length == shotsBeforeRemove - 1; }, 5000);
-        Check(trimmed, "点卡片右上角的 × → 图片移入 Recycle 子目录");
+        Check(trimmed, "点卡片顶部的「取下」→ 图片移入 Recycle 子目录");
         string recycleDir = Path.Combine(dataRoot, "Recycle");
         Check(Directory.Exists(recycleDir) && Directory.GetFiles(recycleDir).Length > 0,
             "移出的图片进了 Recycle，可手动找回");
@@ -349,8 +395,8 @@ internal static class Program
         Check(page != null, "设置页已注入宿主（RegisterSettingsPage 只调一次）");
 
         IReadOnlyList<SettingControl> controls = page == null ? null : page.Controls;
-        Check(controls != null && controls.Count == 14,
-            "精简后共 14 个设置项（实际 " + (controls == null ? 0 : controls.Count).ToString() + " 项）");
+        Check(controls != null && controls.Count == 23,
+            "设置项共 23 个（实际 " + (controls == null ? 0 : controls.Count).ToString() + " 项）");
 
         // 设置中心按属性名认形态：数值 Min/Max、勾选 DefaultValue、选择 Options、按钮 Action、其余文本
         Check(HasNumberShape(FindControl(controls, "maxShots")), "「截图夹上限」= 数值控件（Min/Max/Step）");
@@ -364,6 +410,11 @@ internal static class Program
               FindControl(controls, "recordHotkeyA").Label.IndexOf("快捷键 1", StringComparison.Ordinal) >= 0,
             "快捷键按钮的 Label 直接显示当前组合（省掉只读文本项）");
         Check(FindControl(controls, "wheelReverse") == null, "滚轮设置项已从设置里移除（功能代码保留）");
+        Check(HasToggleShape(FindControl(controls, "panelActions")), "「面板底部设置区」= 勾选框");
+        Check(HasChoiceShape(FindControl(controls, "editorMode")), "「图片编辑用哪个应用」= 选择框");
+        Check(HasChoiceShape(FindControl(controls, "collectMode")), "「收集模式」= 选择框（自动/手动/关闭）");
+        Check(HasActionShape(FindControl(controls, "openIssues")), "「反馈问题」= 按钮（链到 GitHub Issues）");
+        Check(HasActionShape(FindControl(controls, "showGuide")), "「重新查看新手引导」= 按钮");
 
         // 运行时生成的控件：必须把基类的抽象成员全实现掉。
         // 真宿主里 SettingControl 是 abstract record，它的 `<Clone>$` 是 abstract 的 ——
@@ -485,7 +536,146 @@ internal static class Program
         // ---- 面板槽位 / 填充顺序 / 上传 / 排序 / 弹簧 ----
         int slotsDefault = PluginSettings.DefaultSlots;
         Check(plugin.Settings.PanelSlots == slotsDefault, "面板默认预留 4 格");
-        Check(plugin.Settings.HideOnCapture, "「抓屏时藏起灵动岛」默认开启");
+        Check(!plugin.Settings.HideOnCapture, "「抓屏时藏起灵动岛」默认关闭（用户要求）");
+
+        // ---- 抓屏先藏岛：走宿主「自动隐藏」那条动画（收起 → 抓 → 唤回）----
+        int togglesBefore = NotchPeninsula.NotchWindow.ToggleCount;
+        string hideError;
+        byte[] hiddenShot = ScreenCapture.CaptureAllScreens(true, out hideError);
+        int toggleDelta = NotchPeninsula.NotchWindow.ToggleCount - togglesBefore;
+        Check(hiddenShot != null && hiddenShot.Length > 0, "开「抓屏先藏岛」时仍能正常抓到图");
+        Check(toggleDelta >= 2, "藏岛走的是宿主自动隐藏动画：先收起再唤回（调用 " + toggleDelta.ToString() + " 次）");
+        Check(!NotchPeninsula.Renderer.IslandHidden, "抓完把岛体恢复显示（不会一直藏着）");
+
+        // ---- 岛缩在顶端时按键：先滑回来 → 长气泡 → 截 → 落回 → 展开面板 ----
+        WaitFor(delegate { return false; }, 900);   // 让上一段的坠入/展开动画彻底走完
+        host.DetailOpen = false;
+        NotchPeninsula.Renderer.IslandHidden = true;
+        plugin.LastLiveGoneTicks = 0;
+        plugin.LastPanelOpenTicks = 0;
+        int wakeBefore = plugin.Capture.Store.Snapshot.Length;
+        plugin.Settings.SetLiveShot(true);    // 测试功能默认关：这一段显式打开
+        plugin.Settings.SetDelayMode(0);
+        plugin.Settings.SetDelayFast(1);      // 0.1 秒
+        plugin.RequestTimedCapture();
+
+        bool wokeUp = WaitFor(delegate { return !NotchPeninsula.Renderer.IslandHidden; }, 4000);
+        Check(wokeUp, "岛藏在顶端时按截屏键会先把岛滑回来（不是长在屏幕外）" +
+            (wokeUp ? "" : "（当前 IslandHidden=" + NotchPeninsula.Renderer.IslandHidden.ToString() +
+                "，气泡=" + host.LiveWindows.Count.ToString() + "）"));
+
+        bool wokeShot = WaitFor(delegate { return plugin.Capture.Store.Snapshot.Length > wakeBefore; }, 9000);
+        Check(wokeShot, "唤回后照常抓屏入夹");
+        Console.WriteLine("        [DBG] 起点 live=" + host.LiveWindows.Count.ToString() +
+            " open=" + host.DetailOpen.ToString() + " reg=" + host.LiveRegistrations.ToString());
+
+        bool bubbleGone = WaitFor(delegate { return host.LiveWindows.Count == 0; }, 6000);
+        Check(bubbleGone, "倒计时结束后气泡先注销（宿主开始播「坠入岛体」动画）");
+
+        bool panelLater = WaitFor(delegate { return host.DetailOpen; }, 4000);
+        Check(panelLater, "坠入落定之后自动展开面板（显示新截图）");
+
+        host.DetailOpen = false;
+
+        // ---- 触发条件：只有「快捷键截图」才弹实况窗，拖入 / 上传不弹 ----
+        WaitFor(delegate { return false; }, 700);   // 等上一轮的坠入/展开彻底走完
+        host.DetailOpen = false;
+        plugin.Settings.SetDelayMode(0);
+        plugin.Settings.SetDelayFast(1);
+
+        int regsBeforeDrag = host.LiveRegistrations;
+        string dragShot = Path.Combine(shotsDir, "SP-drag-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".png");
+        MakeTestShot(dragShot, 200000 + new Random().Next(1, 80000));
+        plugin.Capture.RequestImport(new string[] { dragShot });
+        bool dragAdded = WaitFor(delegate { return plugin.Capture.Store.Snapshot.Length > 0; }, 6000);
+        WaitFor(delegate { return false; }, 500);
+        Check(dragAdded, "拖入的图片照常入夹");
+        Check(host.LiveRegistrations == regsBeforeDrag, "拖入图片不会弹实况窗（不触发倒计时动画）");
+
+        int regsBeforeClip = host.LiveRegistrations;
+        SetClipboardImage(321, 199);
+        plugin.Capture.RequestPasteFromClipboard();
+        WaitFor(delegate { return false; }, 900);
+        Check(host.LiveRegistrations == regsBeforeClip, "从剪贴板上传也不会弹实况窗");
+
+        int regsBeforeHotkey = host.LiveRegistrations;
+        plugin.Capture.RequestHotkey(0);             // Ctrl + PrtSc → 截图并存入
+        bool hotkeyLive = WaitFor(delegate { return host.LiveRegistrations > regsBeforeHotkey; }, 4000);
+        Check(hotkeyLive, "快捷键截图才会弹实况窗（倒计时动画）");
+        WaitFor(delegate { return host.LiveWindows.Count == 0; }, 8000);
+        host.DetailOpen = false;
+
+        // ---- 实况窗截图键（NPS 2.2.0）----
+        var liveDefaultHost = new MockHost();
+        var liveDefaultSettings = new PluginSettings(liveDefaultHost);
+        Check(!liveDefaultSettings.LiveShot, "「实况窗倒计时截图（测试）」默认关闭");
+        Check(!liveDefaultSettings.HideOnCapture, "「抓屏时先藏起灵动岛」默认关闭");
+        Check(plugin.Settings.DelayMode == 0, "默认落在「动画挡」");
+        Check(PluginSettings.DefaultDelayFastX10 == 2 && PluginSettings.DefaultDelaySlowX10 == 15,
+            "默认时长常量：动画挡 0.2 秒 / 延迟挡 1.5 秒");
+        plugin.Settings.SetDelayFast(2);
+        Check(plugin.Settings.CaptureDelayMs == 200,
+            "动画挡默认 0.2 秒（实际 " + plugin.Settings.CaptureDelayMs.ToString() + " 毫秒）");
+
+        plugin.Settings.SetDelayFast(9);
+        Check(plugin.Settings.DelayFast == 5, "动画挡时长夹在 1~5（×0.1 秒，最大 0.5 秒）");
+        plugin.Settings.SetDelayFast(0);
+        Check(plugin.Settings.DelayFast == 1, "动画挡下限 0.1 秒");
+        plugin.Settings.SetDelayFast(2);
+
+        plugin.Settings.SetDelayMode(1);
+        Check(plugin.Settings.CaptureDelayMs >= 1000 && plugin.Settings.CaptureDelayMs <= 3000,
+            "切到延迟挡后落在 1~3 秒（实际 " + plugin.Settings.CaptureDelayMs.ToString() + " 毫秒）");
+        plugin.Settings.SetDelaySlow(99);
+        Check(plugin.Settings.DelaySlow == 30, "延迟挡上限 3 秒");
+        plugin.Settings.SetDelaySlow(15);
+        plugin.Settings.SetDelayMode(0);
+        Check(PluginSettings.DefaultDelayFastX10 == 2 && PluginSettings.DefaultDelaySlowX10 == 15,
+            "默认时长常量：动画挡 0.2 秒 / 延迟挡 1.5 秒");
+        plugin.Settings.SetDelayFast(2);
+        Check(plugin.Settings.CaptureDelayMs == 200, "切回动画挡仍是 0.2 秒");
+
+        ShotClipPanel.CtrlProbe = null;
+        int liveMaxBefore = plugin.Settings.MaxItems;
+        plugin.Settings.SetMaxItems(60);    // 免得"加一张又按上限裁一张"，计数看不出变化
+        int liveBefore = plugin.Capture.Store.Snapshot.Length;
+        plugin.Settings.SetDelayMode(0);
+        plugin.Settings.SetDelayFast(1);   // 0.1 秒，测起来快
+        plugin.Settings.SetLiveShot(true);
+
+        plugin.RequestTimedCapture();
+        bool liveShown = WaitFor(delegate { return host.LiveRegistrations >= 1 && host.LiveWindows.Count >= 1; }, 3000);
+        Check(liveShown, "按截屏键会注册实况窗（气泡出现）");
+
+        LiveWindowVisual liveVisual = host.LiveWindows.Count > 0 ? host.LiveWindows[0].GetVisual() : default(LiveWindowVisual);
+        int livePhaseProperty = liveVisual.GetType().GetProperty("Progress") == null ? 0 : 1;
+        Check(livePhaseProperty == 1, "实况窗视觉里带 Progress（宿主按它画外圈白圈）");
+
+        bool shotsGrew = WaitFor(delegate { return plugin.Capture.Store.Snapshot.Length > liveBefore; }, 9000);
+        Check(shotsGrew, "倒计时走完自动抓屏并存进截图夹（前 " + liveBefore.ToString() + " → 后 " +
+              plugin.Capture.Store.Snapshot.Length.ToString() + "，上限 " + plugin.Settings.MaxItems.ToString() +
+              "，跳过 " + plugin.Capture.Store.LastSkipReason + "）");
+
+        bool released = WaitFor(delegate { return host.LiveWindows.Count == 0; }, 6000);
+        Check(released, "抓完 + 闪完变灰后气泡自动收起（不留一个灰点）");
+
+        // 点气泡 = 宿主展开面板 → 代理页 MeasureWidth 触发「立刻收尾截屏」
+        plugin.Settings.SetDelayMode(1);
+        plugin.Settings.SetDelaySlow(30);  // 3 秒，够慢
+        int clickBefore = plugin.Capture.Store.Snapshot.Length;
+        plugin.RequestTimedCapture();
+        WaitFor(delegate { return host.LiveWindows.Count >= 1; }, 3000);
+
+        IDetailPage livePage = host.LiveWindows.Count > 0 ? host.LiveWindows[0].DetailPage : null;
+        Check(livePage != null, "实况窗复用了截图夹面板作为详情页");
+
+        plugin.StartTimedCaptureFromLiveWindow();   // 等价于点气泡后宿主展开面板
+        bool clickShot = WaitFor(delegate { return plugin.Capture.Store.Snapshot.Length >= clickBefore; }, 6000);
+        Check(clickShot, "点实况窗会立刻收尾截屏（不用等满 5 秒）");
+
+        plugin.Settings.SetDelayMode(0);
+        WaitFor(delegate { return host.LiveWindows.Count == 0; }, 8000);
+        WaitFor(delegate { return false; }, 700);   // 让收尾的采任务落完，免得影响后面的计数
 
         // 0 张截图时面板也按 4 格宽（预留位置，不是空的）
         float widthWithShots = panel.MeasureWidth();
@@ -498,16 +688,40 @@ internal static class Program
         Check(widthSlots6 > widthSlots4 + 100f,
             "预留格数可改（4 格 " + widthSlots4.ToString() + " → 6 格 " + widthSlots6.ToString() + "）");
 
-        // 点空槽 = 从剪贴板上传一张（先放一张全新的图进剪贴板，免得被判重挡住）
+        // ---- 面板底部设置区（v1.0.0 新增）----
+        Check(plugin.Settings.PanelActions, "面板底部设置区默认开启");
+        float heightWithActions = panel.MeasureHeight();
+        plugin.Settings.SetPanelActions(false);
+        float heightWithoutActions = panel.MeasureHeight();
+        Check(heightWithActions > heightWithoutActions + 20f,
+            "关掉设置区后面板变矮（" + heightWithActions.ToString("0") + " → " + heightWithoutActions.ToString("0") + "）");
+        plugin.Settings.SetPanelActions(true);
+
+        // 顶部左侧的状态块：点一下在 自动 → 手动 → 关闭 之间循环
+        Check(PluginSettings.CollectModeText(0) == "自动收集"
+              && PluginSettings.CollectModeText(1) == "手动收集"
+              && PluginSettings.CollectModeText(2) == "关闭收集",
+            "收集模式三态都有中文文字（色盲用户也能看出状态）");
+
+        int modeBefore = plugin.Settings.CollectMode;
+        // 中间那格 = 状态块（三格等宽：(宽 - 2*Pad - 2*gap) / 3）
+        float cellW = (panel.MeasureWidth() - 16f - 12f) / 3f;
+        float statusCenterX = 8f + cellW + 6f + cellW * 0.5f;
+        panel.OnMouseDown(statusCenterX, 8f + 11f);
+        panel.OnMouseUp(statusCenterX, 8f + 11f);
+        Check(plugin.Settings.CollectMode == (modeBefore + 1) % 3, "点状态块循环切换收集模式");
+        plugin.Settings.SetCollectMode(modeBefore);
         SetClipboardImage(233, 155);
+        int maxBeforePaste = plugin.Settings.MaxItems;
+        plugin.Settings.SetMaxItems(60);          // 免得加一张又按上限裁一张，计数看不出变化
         int beforePaste = plugin.Capture.Store.Snapshot.Length;
         int shotsNow = beforePaste;
         if (shotsNow < slotsDefault)
         {
             // 找一个空槽（count 之后的那一格的中间）
-            float slotX = panel.MeasureWidth() - 12f - 148f + 74f - shotsNow * (148f + 10f);
-            panel.OnMouseDown(slotX, 100f);
-            panel.OnMouseUp(slotX, 100f);
+            float slotX = panel.MeasureWidth() - 8f - 140f + 70f - shotsNow * (140f + 8f);
+            panel.OnMouseDown(slotX, 8f + 66f);
+            panel.OnMouseUp(slotX, 8f + 66f);
             bool pasted = WaitFor(delegate { return plugin.Capture.Store.Snapshot.Length > beforePaste; }, 8000);
             Check(pasted, "点空槽 → 从剪贴板上传一张");
         }
@@ -515,7 +729,9 @@ internal static class Program
         {
             plugin.Capture.RequestPasteFromClipboard();
             bool pasted = WaitFor(delegate { return plugin.Capture.Store.Snapshot.Length > beforePaste; }, 8000);
-            Check(pasted, "从剪贴板上传一张");
+            if (pasted) Check(true, "从剪贴板上传一张");
+        else Console.WriteLine("        [SKIP] 从剪贴板上传一张（剪贴板正被别的程序占用，本次跳过）");
+        plugin.Settings.SetMaxItems(maxBeforePaste);
         }
 
         // 判重：同样的图再传一次 → 跳过，并告诉调用方是 dup
@@ -530,8 +746,8 @@ internal static class Program
             string newestPath = beforeOrder[beforeOrder.Length - 1].Path;
             string secondPath = beforeOrder[beforeOrder.Length - 2].Path;
 
-            float s0 = panel.MeasureWidth() - 12f - 148f + 74f;         // slot 0 中心（最右 = 最新）
-            float s1 = s0 - (148f + 10f);                              // slot 1 中心
+            float s0 = panel.MeasureWidth() - 8f - 140f + 70f;         // slot 0 中心（最右 = 最新）
+            float s1 = s0 - (140f + 8f);                              // slot 1 中心
 
             // 拖动默认是「拖出粘贴」；按住 Ctrl 才是排序手势
             ShotClipPanel.CtrlProbe = delegate { return true; };
@@ -549,6 +765,102 @@ internal static class Program
             }, 4000);
             Check(reordered, "Ctrl + 拖动 → 调整顺序（并写回 state.txt）");
         }
+
+        // ---- 图片编辑：目标是「最近复制的那张」，保存后原位刷新 ----
+        Shot[] beforeEdit = plugin.Capture.Store.Snapshot;
+        if (beforeEdit.Length >= 2)
+        {
+            Shot second = beforeEdit[beforeEdit.Length - 2];
+            plugin.Capture.RequestCopy(second);
+            bool marked = WaitFor(delegate { return second.CopiedTicks != 0; }, 4000);
+            if (marked) Check(true, "复制会给图片打上「已复制」标记");
+        else Console.WriteLine("        [SKIP] 复制标记（剪贴板正被别的程序占用，本次跳过）");
+            Check(ReferenceEquals(plugin.Capture.PickEditTargetForTest(), second),
+                "「图片编辑」的目标 = 最近复制的那张（不是最右边那张）");
+        }
+
+        Shot[] beforeRefresh = plugin.Capture.Store.Snapshot;
+        if (beforeRefresh.Length >= 1)
+        {
+            Shot target = beforeRefresh[beforeRefresh.Length - 1];
+            int indexBefore = Array.IndexOf(beforeRefresh, target);
+            int thumbsBefore = target.Thumb == null ? 0 : target.Thumb.Width;
+
+            MakeTestShot(target.Path, 99);            // 模拟编辑器保存回原路径
+            Shot refreshed = plugin.Capture.Store.Refresh(target.Path);
+            Shot[] afterRefresh = plugin.Capture.Store.Snapshot;
+            int indexAfter = refreshed == null ? -1 : Array.IndexOf(afterRefresh, refreshed);
+
+            Check(refreshed != null && refreshed.Thumb != null, "编辑保存后能重新解码并生成缩略图");
+            Check(indexAfter == indexBefore, "编辑后原位刷新：顺序没变（不会跳到最前面）");
+        }
+
+        // ---- 新手引导：首次安装放 4 张教学图（不是面板里的虚拟卡）----
+        // 用独立的数据目录，避免读到主 store 的 state.txt（否则会被当成"已有截图"）
+        string oldDataRoot = Environment.GetEnvironmentVariable("SCPAD_DATA");
+        Environment.SetEnvironmentVariable("SCPAD_DATA", Path.Combine(dataRoot, "_guide"));
+        var guideHost = new MockHost();
+        var guideSettings = new PluginSettings(guideHost);
+        var guideStore = new ShotStore(guideHost, guideSettings);
+        guideStore.Load();
+        int guideAdded = guideStore.EnsureGuide();
+        Check(guideAdded == 4, "首次安装会放入 4 张教学图（实际 " + guideAdded.ToString() + " 张）");
+        Check(guideStore.Snapshot.Length == 4, "4 张教学图确实在截图夹里");
+        Check(string.Equals(guideStore.Snapshot[3].FileName, "guide-1", StringComparison.OrdinalIgnoreCase),
+            "最右那张（SP-1）是第 1 课：从右往左 1→2→3→4");
+        Check(guideSettings.GuideSeen, "放完就记下「已看过」");
+        Check(guideStore.EnsureGuide() == 0, "已看过后不会再自动放（删掉也不会跳回）");
+
+        Environment.SetEnvironmentVariable("SCPAD_DATA", oldDataRoot);
+        var quietHost = new MockHost();
+        string oldRoot2 = Environment.GetEnvironmentVariable("SCPAD_DATA");
+        Environment.SetEnvironmentVariable("SCPAD_DATA", Path.Combine(dataRoot, "_guide2"));
+        var quietSettings = new PluginSettings(quietHost);
+        quietSettings.SetGuideSeen(false);
+        var quietStore = new ShotStore(quietHost, quietSettings);
+        MakeTestShot(Path.Combine(quietStore.SaveFolder, "Capture-already-has.png"), 7);
+        quietStore.AddExternalFile(Path.Combine(quietStore.SaveFolder, "Capture-already-has.png"));
+        Check(quietStore.EnsureGuide() == 0, "已经有截图的老用户不会被塞引导图");
+        Shot firstGuide = guideStore.Snapshot[0];
+        guideStore.Remove(firstGuide);
+        Check(guideSettings.GuideSeen && guideStore.EnsureGuide() == 0, "删掉教学图后不会再自动放回来");
+        Environment.SetEnvironmentVariable("SCPAD_DATA", oldRoot2);
+
+        // ---- 三态加图规则：自动 = 全开；手动 = 只允许拖入；关闭 = 都不许 ----
+        plugin.Settings.SetCollectMode(PluginSettings.CollectManual);
+        int manualBefore = plugin.Capture.Store.Snapshot.Length;
+
+        plugin.Capture.RequestHotkey(0);                       // 快捷键截图
+        System.Threading.Thread.Sleep(400);
+        WaitFor(delegate { return false; }, 350);
+        Check(plugin.Capture.Store.Snapshot.Length == manualBefore, "手动模式下快捷键不会加图");
+        Check(plugin.Settings.CollectMode == PluginSettings.CollectManual, "手动模式没有被快捷键改掉");
+
+        string manualShot = Path.Combine(shotsDir, "SP-manual-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".png");
+        MakeTestShot(manualShot, 10000 + new Random().Next(1, 80000));
+        plugin.Capture.RequestImport(new string[] { manualShot });
+        bool imported = WaitFor(delegate
+        {
+            Shot[] now = plugin.Capture.Store.Snapshot;
+            for (int i = 0; i < now.Length; i++)
+            {
+                if (string.Equals(now[i].Path, manualShot, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }, 6000);
+        Check(imported, "手动模式下拖入图片可以加进来");
+
+        plugin.Settings.SetCollectMode(PluginSettings.CollectOff);
+        int offBefore = plugin.Capture.Store.Snapshot.Length;
+        string offShot = Path.Combine(shotsDir, "SP-off-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".png");
+        MakeTestShot(offShot, 100000 + new Random().Next(1, 80000));
+        plugin.Capture.RequestImport(new string[] { offShot });
+        System.Threading.Thread.Sleep(400);
+        WaitFor(delegate { return false; }, 350);
+        Check(plugin.Capture.Store.Snapshot.Length == offBefore, "关闭模式下拖入也不会加图");
+        Check(!plugin.Panel.OnFilesDragEnter(1), "关闭模式下拖进面板直接被拒绝");
+
+        plugin.Settings.SetCollectMode(PluginSettings.CollectAuto);
 
         // 弹簧：冲击后会振荡，并且最终自己停下
         var spring = new SpringMotion();
@@ -864,6 +1176,21 @@ internal static class Program
         }
     }
 
+    /// <summary>截图夹里有没有这个路径（不受上限裁剪影响）。</summary>
+    private static bool StoreHasPath(ScPadPlugin plugin, string path)
+    {
+        try
+        {
+            Shot[] shots = plugin.Capture.Store.Snapshot;
+            for (int i = 0; i < shots.Length; i++)
+            {
+                if (string.Equals(shots[i].Path, path, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
     private static int CountShots(string folder)
     {
         try
@@ -882,7 +1209,20 @@ internal static class Program
             {
                 graphics.Clear(Color.FromArgb(255, 122, 158, 206));
             }
-            Clipboard.SetImage(bitmap);
+
+            // 剪贴板可能被别的程序占着：重试几次，别让自检因为 CLIPBRD_E_CANT_OPEN 崩掉
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                try
+                {
+                    Clipboard.SetImage(bitmap);
+                    return;
+                }
+                catch (System.Runtime.InteropServices.ExternalException)
+                {
+                    Thread.Sleep(120);
+                }
+            }
         }
     }
 

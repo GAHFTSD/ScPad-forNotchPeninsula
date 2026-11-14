@@ -80,6 +80,52 @@ namespace ScPad
             return _weHid;
         }
 
+        /// <summary>
+        /// 岛缩在屏幕顶端时，先把它滑回来（走同一条退场/入场动画），再长实况窗。
+        /// 返回 true = 现在是可见的（本来就没藏，或已唤醒）。
+        /// </summary>
+        internal static bool EnsureVisible()
+        {
+            Probe();
+            if (!IsHidden()) return true;
+
+            bool ok = TryToggle();
+            if (ok)
+            {
+                // 宿主入场动画约 0.45 秒，等它站定再长气泡
+                try { System.Threading.Thread.Sleep(520); } catch { }
+            }
+            return ok;
+        }
+
+        /// <summary>
+        /// 等岛**完全可见**（拖动动画结束）再返回：先唤醒，再轮询 IsHidden 直到为 false，
+        /// 最后再等约 0.12 秒让弹簧动画站定。
+        /// </summary>
+        internal static bool WaitUntilVisible(int timeoutMs)
+        {
+            Probe();
+
+            long deadline = Environment.TickCount64 + (timeoutMs < 200 ? 200 : timeoutMs);
+
+            if (IsHidden())
+            {
+                TryToggle();
+
+                while (Environment.TickCount64 < deadline)
+                {
+                    if (!IsHidden()) break;
+                    try { System.Threading.Thread.Sleep(40); } catch { }
+                }
+            }
+
+            if (IsHidden()) return false;
+
+            // 已经不再"藏"，但弹簧还在收尾：再让一帧动画站定
+            try { System.Threading.Thread.Sleep(120); } catch { }
+            return true;
+        }
+
         /// <summary>抓完把岛唤回来（只在我们自己藏过的时候动）。</summary>
         internal static void Restore()
         {
@@ -141,6 +187,14 @@ namespace ScPad
                     Log.Warn("[ScPad] 探测宿主藏岛接口失败，将不藏岛：" + ex.Message);
                 }
             }
+
+            try
+            {
+                Log.Info("[ScPad] 藏岛探测：toggle=" + (_toggle != null ? "有" : "无") +
+                    " field=" + (_hiddenField != null ? "有" : "无") +
+                    " prop=" + (_hiddenProperty != null ? "有" : "无"));
+            }
+            catch { }
 
             if (!_warned && _toggle == null)
             {

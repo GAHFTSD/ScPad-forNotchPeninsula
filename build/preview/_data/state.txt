@@ -1,0 +1,15 @@
+﻿# ScPad state v2
+0	D:\GoodExecution\Execs\ScPad\build\preview\_shots\Capture-selftest-1.png
+0	D:\GoodExecution\Execs\ScPad\build\preview\_shots\Capture-selftest-2.png
+0	D:\GoodExecution\Execs\ScPad\build\preview\_shots\Capture-selftest-3.png
+0	D:\GoodExecution\Execs\ScPad\build\preview\_shots\Capture-selftest-4.png
+0	D:\GoodExecution\Execs\ScPad\build\preview\_shots\Capture-selftest-5.png
+1	D:\GoodExecution\Execs\ScPad\build\preview\_shots\SP-261115-002257-2e8c.png
+1	D:\GoodExecution\Execs\ScPad\build\preview\_shots2\SP-261115-002258-06c4.png
+1	D:\GoodExecution\Execs\ScPad\build\preview\_shots2\SP-261115-002301-0849.png
+0	D:\GoodExecution\Execs\ScPad\build\preview\_shots\SP-drag-1c2ee0.png
+1	D:\GoodExecution\Execs\ScPad\build\preview\_shots2\SP-261115-002303-4aee.png
+1	D:\GoodExecution\Execs\ScPad\build\preview\_shots2\SP-261115-002304-72d0.png
+1	D:\GoodExecution\Execs\ScPad\build\preview\_shots2\SP-261115-002305-97f1.png
+1	D:\GoodExecution\Execs\ScPad\build\preview\_shots2\SP-261115-002305-ebf5.png
+0	D:\GoodExecution\Execs\ScPad\build\preview\_shots\SP-manual-de7154.png
